@@ -1,0 +1,60 @@
+```markdown
+# Limina AI — Python Monitor SDK
+
+[![PyPI version](https://badge.fury.io/py/limina-monitor.svg)](https://badge.fury.io/py/limina-monitor)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+
+> Lightweight, zero-latency Python client SDK for streaming multi-turn AI Agent execution traces to Limina AI.
+
+---
+
+## ⚡ Quickstart
+
+### 1. Installation
+```bash
+pip install limina-monitor
+```
+
+### 2. Trace Your AI Agent & External Tools
+```python
+from limina import LiminaMonitor
+
+# 1. Initialize client with your Limina API Key
+limina = LiminaMonitor(api_key="your_limina_api_key_here")
+
+# 2. Trace external tool/database execution
+@limina.trace_tool(tool_name="sql_database")
+def query_database(user_id: str):
+    return {"status": "active", "plan": "pro"}
+
+# 3. Trace top-level AI agent function
+@limina.trace(session_id="customer_run_1", description="Support Agent Test")
+def my_agent(user_prompt: str):
+    user_info = query_database("usr_101")
+    return f"User plan is {user_info['plan']}."
+
+if __name__ == "__main__":
+    response = my_agent("What is my current subscription plan?")
+    print(response)
+```
+
+---
+
+## 🚀 Key Features
+
+- **1-Line Integration:** Wrap agent and tool functions with simple decorators (`@limina.trace`, `@limina.trace_tool`).
+- **0ms Host Latency:** Streams trajectory graphs asynchronously in non-blocking daemon background threads.
+- **Automatic DAG Modeling:** Automatically constructs State-Space execution graphs (`User -> Tool -> Agent`) with millisecond execution latencies.
+- **AST & Context Validation:** Captures structured JSON outputs for deterministic evaluation.
+
+---
+
+## 🛡️ Privacy & Performance
+The `limina-monitor` SDK does not block your agent's execution. If network errors occur, the SDK fails silently to ensure your host application remains unaffected in production.
+
+---
+
+## 📄 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+```
