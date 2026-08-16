@@ -1,4 +1,4 @@
-# limina/__init__.py
 from .tracer import LiminaMonitor
+from .adapters import LogAdapter
 
-__all__ = ["LiminaMonitor"]
+__all__ = ["LiminaMonitor", "LogAdapter"]

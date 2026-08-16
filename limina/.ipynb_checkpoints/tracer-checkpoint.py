@@ -9,14 +9,20 @@ _active_session_context = threading.local()
 
 class LiminaMonitor:
     """
-    Runs 100% locally on your machine with zero cloud data leaks.
+    Local-First Python SDK for deterministic AI Agent evaluation and trajectory tracing.
     """
     _instance = None
 
-    def __init__(self, api_key: str = "limina_local_dev", export_html: bool = True):
+    def __init__(self, api_key: str = "limina_local_dev", profile: str = "standard", export_html: bool = True):
         self.api_key = api_key
+        self.profile = profile.lower()  # "standard", "banking", "healthcare", "customer_support", "creative"
         self.export_html = export_html
         LiminaMonitor._instance = self
+
+    def set_profile(self, profile_name: str):
+        """Changes evaluation strictness profile at runtime."""
+        self.profile = profile_name.lower()
+        print(f"[limina-sdk]: Active evaluation profile set to: [{self.profile}]")
 
     @classmethod
     def get_instance(cls):
@@ -49,24 +55,22 @@ class LiminaMonitor:
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """Evaluates historical JSON logs locally."""
+    def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]]], source: str = "auto") -> Dict[str, Any]:
+        """
+        Evaluates historical logs from OpenAI, LangSmith, or standard JSON files.
+        Automatically converts them into State-Space DAGs and runs local evaluation.
+        """
+        from limina.adapters import LogAdapter
         from evaluator import evaluate_trajectories_batch, generate_html_report
         from report_generator import generate_ai_report
-
-        if isinstance(input_data, str):
-            with open(input_data, 'r', encoding='utf-8') as f:
-                payload = json.load(f)
-        else:
-            payload = input_data
-
-        report = evaluate_trajectories_batch(payload, run_stress_test=False)
+        trajectories = LogAdapter.auto_convert(input_data, source=source)
+        report = evaluate_trajectories_batch(trajectories, run_stress_test=False)
         ai_markdown = generate_ai_report(report)
         report["narrative_report"] = ai_markdown
 
         if self.export_html:
             generate_html_report(report, output_path="report.html")
-            print("\n[limina-sdk]: Generated report.html on disk.")
+            print("\n[limina-sdk]: Converted and evaluated logs. Saved report.html to disk.")
 
         return report
 
