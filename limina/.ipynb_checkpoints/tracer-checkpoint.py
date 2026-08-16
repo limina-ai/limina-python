@@ -1,72 +1,74 @@
-# limina/tracer.py
 import functools
 import time
-import requests
-import threading
 import json
 import os
+import threading
 from typing import Optional, Callable, Any, Dict, List, Union
 
 _active_session_context = threading.local()
 
 class LiminaMonitor:
     """
-    Client SDK for streaming multi-turn agent execution trajectories to Limina AI.
+    Runs 100% locally on your machine with zero cloud data leaks.
     """
     _instance = None
 
-    def __init__(self, api_key: str, api_url: str = "http://127.0.0.1:8000/evaluate/trajectory", export_html: bool = False):
+    def __init__(self, api_key: str = "limina_local_dev", export_html: bool = True):
         self.api_key = api_key
-        self.api_url = api_url
         self.export_html = export_html
         LiminaMonitor._instance = self
 
     @classmethod
     def get_instance(cls):
         if not cls._instance:
-            raise RuntimeError("LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
+            raise RuntimeError("LiminaMonitor is not initialized. Call LiminaMonitor(...) first.")
         return cls._instance
 
-    def _send_payload_async(self, payload: List[Dict[str, Any]]):
+    def _evaluate_locally(self, payload: List[Dict[str, Any]]):
+        """Runs evaluation locally on CPU in background thread without blocking host agent."""
         def _worker():
             try:
-                headers = {
-                    "X-API-Key": self.api_key,
-                    "Content-Type": "application/json"
-                }
-                res = requests.post(self.api_url, json=payload, headers=headers, timeout=60)
-                if res.status_code == 200:
-                    rating = res.json().get('executive_summary', {}).get('health_rating', 'Unknown')
-                    print(f"\n[limina-sdk]: Trajectory logged successfully. Health Rating: [{rating}]")
-            except Exception:
-                pass  # Fail silently to protect host agent
+                from evaluator import evaluate_trajectories_batch, generate_html_report
+                from report_generator import generate_ai_report
+
+                report = evaluate_trajectories_batch(payload, run_stress_test=False)
+                if report:
+                    rating = report.get('executive_summary', {}).get('health_rating', 'F')
+                    score = report.get('executive_summary', {}).get('success_rate_percentage', 0.0)
+                    
+                    if self.export_html:
+                        ai_markdown = generate_ai_report(report)
+                        report["narrative_report"] = ai_markdown
+                        generate_html_report(report, output_path="report.html")
+
+                    print(f"\n[limina-sdk]: Trajectory evaluated locally. Rating: [{rating}] (Score: {score:.1f}%)")
+                    if self.export_html:
+                        print("[limina-sdk]: Saved interactive report to: report.html")
+            except Exception as e:
+                pass
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """
-        Synchronously evaluates historical JSON logs or a list of trajectory sessions.
-        """
-        payload = []
+        """Evaluates historical JSON logs locally."""
+        from evaluator import evaluate_trajectories_batch, generate_html_report
+        from report_generator import generate_ai_report
+
         if isinstance(input_data, str):
-            if not os.path.exists(input_data):
-                raise FileNotFoundError(f"Logs file not found: {input_data}")
             with open(input_data, 'r', encoding='utf-8') as f:
                 payload = json.load(f)
-        elif isinstance(input_data, list):
-            payload = input_data
         else:
-            raise ValueError("Expected a file path string or a list of trajectory dictionaries.")
+            payload = input_data
 
-        headers = {
-            "X-API-Key": self.api_key,
-            "Content-Type": "application/json"
-        }
-        res = requests.post(self.api_url, json=payload, headers=headers, timeout=60)
-        if res.status_code != 200:
-            raise RuntimeError(f"Limina API error {res.status_code}: {res.text}")
+        report = evaluate_trajectories_batch(payload, run_stress_test=False)
+        ai_markdown = generate_ai_report(report)
+        report["narrative_report"] = ai_markdown
 
-        return res.json()
+        if self.export_html:
+            generate_html_report(report, output_path="report.html")
+            print("\n[limina-sdk]: Generated report.html on disk.")
+
+        return report
 
     def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run"):
         def decorator(func: Callable):
@@ -112,7 +114,7 @@ class LiminaMonitor:
                             "edges": _active_session_context.edges
                         }
                     ]
-                    self._send_payload_async(payload)
+                    self._evaluate_locally(payload)
 
             return wrapper
         return decorator

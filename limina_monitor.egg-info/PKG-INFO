@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: limina-monitor
-Version: 0.1.1
+Version: 0.2.0
 Summary: Python client SDK for multi-turn AI Agent evaluation & trajectory monitoring with Limina AI
 Home-page: https://github.com/limina-ai/limina-python
 Author: Limina AI
