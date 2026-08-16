@@ -4,7 +4,8 @@ import time
 import requests
 import threading
 import json
-from typing import Optional, Callable, Any, Dict, List
+import os
+from typing import Optional, Callable, Any, Dict, List, Union
 
 _active_session_context = threading.local()
 
@@ -14,9 +15,10 @@ class LiminaMonitor:
     """
     _instance = None
 
-    def __init__(self, api_key: str, api_url: str = "http://127.0.0.1:8000/evaluate/trajectory"):
+    def __init__(self, api_key: str, api_url: str = "http://127.0.0.1:8000/evaluate/trajectory", export_html: bool = False):
         self.api_key = api_key
         self.api_url = api_url
+        self.export_html = export_html
         LiminaMonitor._instance = self
 
     @classmethod
@@ -32,11 +34,39 @@ class LiminaMonitor:
                     "X-API-Key": self.api_key,
                     "Content-Type": "application/json"
                 }
-                requests.post(self.api_url, json=payload, headers=headers, timeout=60)
-            except Exception as e:
-                pass  # Silent failure in host agent
+                res = requests.post(self.api_url, json=payload, headers=headers, timeout=60)
+                if res.status_code == 200:
+                    rating = res.json().get('executive_summary', {}).get('health_rating', 'Unknown')
+                    print(f"\n[limina-sdk]: Trajectory logged successfully. Health Rating: [{rating}]")
+            except Exception:
+                pass  # Fail silently to protect host agent
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """
+        Synchronously evaluates historical JSON logs or a list of trajectory sessions.
+        """
+        payload = []
+        if isinstance(input_data, str):
+            if not os.path.exists(input_data):
+                raise FileNotFoundError(f"Logs file not found: {input_data}")
+            with open(input_data, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        elif isinstance(input_data, list):
+            payload = input_data
+        else:
+            raise ValueError("Expected a file path string or a list of trajectory dictionaries.")
+
+        headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json"
+        }
+        res = requests.post(self.api_url, json=payload, headers=headers, timeout=60)
+        if res.status_code != 200:
+            raise RuntimeError(f"Limina API error {res.status_code}: {res.text}")
+
+        return res.json()
 
     def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run"):
         def decorator(func: Callable):
