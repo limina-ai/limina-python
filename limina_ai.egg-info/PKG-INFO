@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: limina-ai
+Version: 1.0.0
+Summary: Python SDK for Limina AI — Trajectory Diagnostics & Automated Prompt Patching
+Requires-Python: >=3.8
+License-File: LICENSE
+Dynamic: license-file
+Dynamic: requires-python
+Dynamic: summary

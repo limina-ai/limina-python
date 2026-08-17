@@ -1,78 +1,82 @@
 import functools
 import time
 import json
-import os
 import threading
 from typing import Optional, Callable, Any, Dict, List, Union
+from gradio_client import Client
 
 _active_session_context = threading.local()
 
 class LiminaMonitor:
     """
-    Local-First Python SDK for deterministic AI Agent evaluation and trajectory tracing.
+    Official Python SDK for Limina AI — Real-time Trajectory Diagnostics & Automated Prompt Patching.
     """
     _instance = None
 
-    def __init__(self, api_key: str = "limina_local_dev", profile: str = "standard", export_html: bool = True):
+    def __init__(
+        self, 
+        api_key: str = "limina_live_test_key_123456789abcdef0", 
+        space_id: str = "sdawdsdw/limina-engine",
+        export_html: bool = False
+    ):
         self.api_key = api_key
-        self.profile = profile.lower()  # "standard", "banking", "healthcare", "customer_support", "creative"
+        self.space_id = space_id
         self.export_html = export_html
+        self.client = Client(space_id)
+        self._threads = []
         LiminaMonitor._instance = self
-
-    def set_profile(self, profile_name: str):
-        """Changes evaluation strictness profile at runtime."""
-        self.profile = profile_name.lower()
-        print(f"[limina-sdk]: Active evaluation profile set to: [{self.profile}]")
 
     @classmethod
     def get_instance(cls):
         if not cls._instance:
-            raise RuntimeError("LiminaMonitor is not initialized. Call LiminaMonitor(...) first.")
+            raise RuntimeError("LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
         return cls._instance
 
-    def _evaluate_locally(self, payload: List[Dict[str, Any]]):
-        """Runs evaluation locally on CPU in background thread without blocking host agent."""
+    def evaluate(self, payload: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Sends trajectories synchronously to Cloud ZeroGPU."""
+        try:
+            raw_result_str = self.client.predict(
+                api_key=self.api_key,
+                payload_json=json.dumps(payload),
+                api_name="/evaluate"
+            )
+            result = json.loads(raw_result_str)
+
+            if "error" in result:
+                print(f"[Limina AI Error]: {result['error']}")
+                return result
+
+            summary = result.get('executive_summary', {})
+            print(f"[Limina AI]: Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
+            return result
+        except Exception as e:
+            print(f"[Limina AI Error]: Evaluation failed: {e}")
+            return {"status": "ERROR", "error": str(e)}
+
+    def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]], Dict[str, Any]], source: str = "auto") -> Dict[str, Any]:
+        from .adapters import LogAdapter
+        trajectories = LogAdapter.auto_convert(input_data, source=source)
+        if not trajectories:
+            print("[Limina AI Warning]: No valid trajectories extracted from input logs.")
+            return {}
+        return self.evaluate(trajectories)
+
+    def _send_to_cloud(self, payload: List[Dict[str, Any]]):
         def _worker():
             try:
-                from evaluator import evaluate_trajectories_batch, generate_html_report
-                from report_generator import generate_ai_report
-
-                report = evaluate_trajectories_batch(payload, run_stress_test=False)
-                if report:
-                    rating = report.get('executive_summary', {}).get('health_rating', 'F')
-                    score = report.get('executive_summary', {}).get('success_rate_percentage', 0.0)
-                    
-                    if self.export_html:
-                        ai_markdown = generate_ai_report(report)
-                        report["narrative_report"] = ai_markdown
-                        generate_html_report(report, output_path="report.html")
-
-                    print(f"\n[limina-sdk]: Trajectory evaluated locally. Rating: [{rating}] (Score: {score:.1f}%)")
-                    if self.export_html:
-                        print("[limina-sdk]: Saved interactive report to: report.html")
-            except Exception as e:
+                self.evaluate(payload)
+            except Exception:
                 pass
+        t = threading.Thread(target=_worker, daemon=False)
+        self._threads.append(t)
+        t.start()
 
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]]], source: str = "auto") -> Dict[str, Any]:
-        """
-        Evaluates historical logs from OpenAI, LangSmith, or standard JSON files.
-        Automatically converts them into State-Space DAGs and runs local evaluation.
-        """
-        from limina.adapters import LogAdapter
-        from evaluator import evaluate_trajectories_batch, generate_html_report
-        from report_generator import generate_ai_report
-        trajectories = LogAdapter.auto_convert(input_data, source=source)
-        report = evaluate_trajectories_batch(trajectories, run_stress_test=False)
-        ai_markdown = generate_ai_report(report)
-        report["narrative_report"] = ai_markdown
-
-        if self.export_html:
-            generate_html_report(report, output_path="report.html")
-            print("\n[limina-sdk]: Converted and evaluated logs. Saved report.html to disk.")
-
-        return report
+    def flush(self):
+        """Waits for any pending background trace uploads to complete."""
+        for t in self._threads:
+            if t.is_alive():
+                t.join(timeout=10)
+        self._threads.clear()
 
     def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run"):
         def decorator(func: Callable):
@@ -81,14 +85,11 @@ class LiminaMonitor:
                 start_time = time.time()
                 user_text = str(args[0]) if args else str(kwargs)
 
-                _active_session_context.nodes = [
-                    {"id": "n1", "type": "user", "text": user_text}
-                ]
+                _active_session_context.nodes = [{"id": "n1", "type": "user", "text": user_text}]
                 _active_session_context.edges = []
                 _active_session_context.last_node_id = "n1"
                 _active_session_context.node_counter = 2
 
-                output_text = ""
                 try:
                     result = func(*args, **kwargs)
                     output_text = str(result)
@@ -110,15 +111,13 @@ class LiminaMonitor:
                         "to": agent_node_id
                     })
 
-                    payload = [
-                        {
-                            "session_id": session_id,
-                            "description": description,
-                            "nodes": _active_session_context.nodes,
-                            "edges": _active_session_context.edges
-                        }
-                    ]
-                    self._evaluate_locally(payload)
+                    payload = [{
+                        "session_id": session_id,
+                        "description": description,
+                        "nodes": _active_session_context.nodes,
+                        "edges": _active_session_context.edges
+                    }]
+                    self._send_to_cloud(payload)
 
             return wrapper
         return decorator
