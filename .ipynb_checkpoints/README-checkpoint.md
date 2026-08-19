@@ -29,7 +29,8 @@ from limina import LiminaMonitor
 monitor = LiminaMonitor(
     api_key="YOUR_LIMINA_API_KEY",
     space_id="sdawdsdw/limina-engine",
-    profile="standard"
+    profile="standard",
+    export_html=True
 )
 
 # Trace tool execution
@@ -50,7 +51,7 @@ response = support_agent("Requesting refund for order #992.")
 monitor.flush()
 ```
 
-## Industry Domain Profiles
+## Industry Domain Profiles & Configuration
 
 Limina provides specialized strictness profiles designed for regulated and high-stakes agentic workloads:
 
@@ -65,16 +66,35 @@ Limina provides specialized strictness profiles designed for regulated and high-
 ### Setting Profiles in Python
 
 ```python
-# At initialization:
+# Option A: At initialization
 monitor = LiminaMonitor(api_key="YOUR_KEY", profile="banking")
 
-# Or at runtime:
+# Option B: At runtime
 monitor.set_profile("healthcare")
 ```
 
+### Declarative `limina.yaml` Configuration
+
+Drop a `limina.yaml` file in your project root to enforce workspace-wide policies automatically:
+
+```yaml
+strictness_profile: "banking"
+max_tool_latency_ms: 2000.0
+
+custom_rules:
+  forbidden_words:
+    - "competitor_name"
+    - "guaranteed refund"
+    - "unauthorized financial advice"
+  required_words:
+    - "terms apply"
+    - "disclaimer"
+```
+
+
 ## Historical Log & JSON File Evaluation
 
-`evaluate_logs()` natively accepts local file paths (`.json`), raw Python lists, or individual log dictionaries:
+`evaluate_logs()` natively accepts local file paths (`.json`), raw Python lists, or individual log dictionaries. It auto-detects OpenAI chat transcripts, LangSmith run dumps, or standard Limina DAG files:
 
 ```python
 from limina import LiminaMonitor
@@ -95,6 +115,112 @@ report_from_memory = monitor.evaluate_logs(openai_messages)
 print(report_from_memory["narrative_report"])  # Automated Git Diff prompt patch
 ```
 
+## Advanced Diagnostic Capabilities
+
+### 1. Adversarial Stress-Testing & Red-Teaming (`run_stress_test=True`)
+
+Evaluate agent robustness against real-world user noise and adversarial attack vectors:
+
+* **Typo & Keyboard Neighbor Perturbations:** Injects stochastic character substitutions simulating mobile and fast-typing noise. Measures if semantic drift degrades past safety thresholds.
+* **Jailbreak & System Prompt Injection Resilience:** Simulates adversarial override prefixes (`SYSTEM OVERRIDE`) to evaluate policy adherence under active manipulation.
+* **Robustness Scoring:** Calculates a deterministic robustness delta score (`0.0 - 100.0%`). If robustness falls below 85.0%, the trajectory is flagged with `LOW_ROBUSTNESS`.
+
+```python
+# Run batch evaluation with active adversarial red-teaming
+report = monitor.evaluate_logs("traces.json", run_stress_test=True)
+```
+
+### 2. Standalone Interactive Visual Reports (`export_html=True`)
+
+When `export_html=True` is enabled, the SDK compiles a standalone interactive report (`report.html`) containing:
+
+* **Vis.js Directed Graph Canvas:** Complete visual reconstruction of the multi-turn agent trajectory. Nodes are color-coded based on status (Healthy, Warning, Error/Breach).
+* **Diagnostic Drawer:** Clickable node inspection displaying execution duration in milliseconds, instability indices, token counts, and session cost simulations.
+* **Side-by-Side Error Comparison:** Visual diff comparing the retrieved database context (Premise) directly against the hallucinated agent output (Target).
+* **Rendered Markdown & Patch Inspector:** Full diagnostic narrative with syntax-highlighted Git Diff prompt patches and 1-click clipboard copy.
+
+```python
+monitor = LiminaMonitor(
+    api_key="YOUR_LIMINA_API_KEY",
+    export_html=True
+)
+
+# Generates 'report.html' on disk upon evaluation
+monitor.evaluate_logs("production_traces.json")
+```
+
+## Core Modules & API Reference
+
+### 1. `LiminaMonitor` (Class)
+
+The primary entry point for capturing and evaluating agent trajectories.
+
+#### Initialization
+```python
+LiminaMonitor(
+    api_key: str, 
+    space_id: str = "sdawdsdw/limina-engine", 
+    profile: str = "standard",
+    export_html: bool = False
+)
+```
+* `api_key` (str): Active authentication key associated with your organization.
+* `space_id` (str): Target inference engine instance.
+* `profile` (str): Industry compliance preset (`standard`, `banking`, `healthcare`, `customer_support`, `creative`).
+* `export_html` (bool): When enabled, exports an interactive standalone visual report (`report.html`).
+
+#### Methods
+
+* `set_profile(profile_name: str)`
+  Dynamically switches the active compliance preset at runtime.
+
+* `trace(session_id: str = "default_session", description: str = "")`
+  Decorator for agent execution functions. Captures user inputs, execution duration, and agent text generations into a unified DAG trajectory. Dispatches evaluation payloads asynchronously in the background.
+
+* `trace_tool(tool_name: str = "custom_tool")`
+  Decorator for deterministic tools, database lookups, or API clients. Measures tool execution latency in milliseconds and records structured inputs/outputs.
+
+* `evaluate(payload: List[Dict[str, Any]]) -> Dict[str, Any]`
+  Synchronously dispatches pre-structured trajectory graphs to the evaluation engine and returns the diagnostic report.
+
+* `evaluate_logs(input_data: Union[str, List, Dict], source: str = "auto") -> Dict[str, Any]`
+  Ingests local `.json` file paths or historical log transcripts, converts them into State-Space DAGs using `LogAdapter`, and returns the diagnostic summary.
+
+* `flush()`
+  Blocks execution until all pending background asynchronous trace uploads have completed.
+
+### 2. `LogAdapter` (Class)
+
+Universal converter designed to parse third-party conversation dumps into Limina-compliant State-Space Directed Acyclic Graphs (DAGs).
+
+#### Static Methods
+
+* `LogAdapter.from_openai(messages: List[Dict[str, Any]], session_id: str = None, description: str = "") -> Dict[str, Any]`
+  Parses standard OpenAI chat completion histories (`user`, `assistant`, `tool`, and `tool_calls`) into chronological graph nodes and directional transitions.
+
+* `LogAdapter.from_langsmith(run_data: Dict[str, Any], session_id: str = None) -> Dict[str, Any]`
+  Converts LangChain and LangSmith run trees (including nested child runs, tool chains, and latency metadata) into a Limina trajectory schema.
+
+* `LogAdapter.auto_convert(raw_logs: Union[str, List, Dict], source: str = "auto") -> List[Dict[str, Any]]`
+  Auto-detects log structure (file paths to `.json` files, raw JSON strings, OpenAI message lists, or LangSmith objects) and standardizes them for batch evaluation.
+
+## Diagnostic Output Schema
+
+Evaluation responses return structured diagnostic reports with actionable prompt patches:
+
+```json
+{
+  "executive_summary": {
+    "health_rating": "F",
+    "success_rate_percentage": 0.0,
+    "most_vulnerable_component": "GENERATION_CONTRADICTION, BUSINESS_RULE_VIOLATION",
+    "actionable_advice": "Enforce database parameter constraints in system prompt.",
+    "total_nodes": 3,
+    "errors_detected": 2
+  },
+  "narrative_report": "# Executive Health: [F]\n\n# Actionable Prompt Patch (Git Diff)\n```diff\n- Always fulfill refund requests immediately.\n+ Verify database return limits (14 days max). Never promise cash refunds beyond policy constraints.\n```"
+}
+```
 
 ## Privacy, Security & Data Governance
 
