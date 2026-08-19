@@ -7,4 +7,5 @@ limina/tracer.py
 limina_ai.egg-info/PKG-INFO
 limina_ai.egg-info/SOURCES.txt
 limina_ai.egg-info/dependency_links.txt
+limina_ai.egg-info/requires.txt
 limina_ai.egg-info/top_level.txt
