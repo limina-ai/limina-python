@@ -9,22 +9,28 @@ _active_session_context = threading.local()
 
 class LiminaMonitor:
     """
-    Official Python SDK for Limina AI — Real-time Trajectory Diagnostics & Automated Prompt Patching.
+    Official Python SDK for Limina AI. Real-time Trajectory Diagnostics & Automated Prompt Patching.
     """
     _instance = None
 
     def __init__(
         self, 
-        api_key: str = "limina_live_test_key_123456789abcdef0", 
         space_id: str = "sdawdsdw/limina-engine",
+        profile: str = "standard",
         export_html: bool = False
     ):
         self.api_key = api_key
         self.space_id = space_id
+        self.profile = profile.lower()
         self.export_html = export_html
         self.client = Client(space_id)
         self._threads = []
         LiminaMonitor._instance = self
+
+    def set_profile(self, profile_name: str):
+        """Sets the active strictness profile ('standard', 'banking', 'healthcare', 'customer_support', 'creative')."""
+        self.profile = profile_name.lower()
+        print(f"[Limina AI]: Active evaluation profile set to: [{self.profile}]")
 
     @classmethod
     def get_instance(cls):
