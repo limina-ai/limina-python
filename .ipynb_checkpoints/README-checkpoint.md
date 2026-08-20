@@ -26,9 +26,9 @@ Use decorators to monitor agent state transitions, tool execution latency, and p
 from limina import LiminaMonitor
 
 # Initialize client with optional industry profile ('standard', 'banking', 'healthcare', 'customer_support', 'creative')
+# You can pass api_key directly or set the LIMINA_API_KEY environment variable.
 monitor = LiminaMonitor(
     api_key="YOUR_LIMINA_API_KEY",
-    space_id="sdawdsdw/limina-engine",
     profile="standard",
     export_html=True
 )
@@ -90,7 +90,6 @@ custom_rules:
     - "terms apply"
     - "disclaimer"
 ```
-
 
 ## Historical Log & JSON File Evaluation
 
@@ -158,35 +157,35 @@ The primary entry point for capturing and evaluating agent trajectories.
 #### Initialization
 ```python
 LiminaMonitor(
-    api_key: str, 
-    space_id: str = "sdawdsdw/limina-engine", 
+    api_key: Optional[str] = None, 
     profile: str = "standard",
-    export_html: bool = False
+    export_html: bool = False,
+    host: Optional[str] = None
 )
 ```
-* `api_key` (str): Active authentication key associated with your organization.
-* `space_id` (str): Target inference engine instance.
+* `api_key` (Optional[str]): Active authentication key associated with your organization. Automatically reads from the `LIMINA_API_KEY` environment variable if not provided.
 * `profile` (str): Industry compliance preset (`standard`, `banking`, `healthcare`, `customer_support`, `creative`).
 * `export_html` (bool): When enabled, exports an interactive standalone visual report (`report.html`).
+* `host` (Optional[str]): Optional custom endpoint URL override (for private enterprise or on-premise deployments).
 
 #### Methods
 
-* `set_profile(profile_name: str)`
+* `set_profile(profile_name: str)`  
   Dynamically switches the active compliance preset at runtime.
 
-* `trace(session_id: str = "default_session", description: str = "")`
+* `trace(session_id: str = "default_session", description: str = "")`  
   Decorator for agent execution functions. Captures user inputs, execution duration, and agent text generations into a unified DAG trajectory. Dispatches evaluation payloads asynchronously in the background.
 
-* `trace_tool(tool_name: str = "custom_tool")`
+* `trace_tool(tool_name: str = "custom_tool")`  
   Decorator for deterministic tools, database lookups, or API clients. Measures tool execution latency in milliseconds and records structured inputs/outputs.
 
-* `evaluate(payload: List[Dict[str, Any]]) -> Dict[str, Any]`
+* `evaluate(payload: List[Dict[str, Any]]) -> Dict[str, Any]`  
   Synchronously dispatches pre-structured trajectory graphs to the evaluation engine and returns the diagnostic report.
 
-* `evaluate_logs(input_data: Union[str, List, Dict], source: str = "auto") -> Dict[str, Any]`
+* `evaluate_logs(input_data: Union[str, List, Dict], source: str = "auto") -> Dict[str, Any]`  
   Ingests local `.json` file paths or historical log transcripts, converts them into State-Space DAGs using `LogAdapter`, and returns the diagnostic summary.
 
-* `flush()`
+* `flush()`  
   Blocks execution until all pending background asynchronous trace uploads have completed.
 
 ### 2. `LogAdapter` (Class)
@@ -195,13 +194,13 @@ Universal converter designed to parse third-party conversation dumps into Limina
 
 #### Static Methods
 
-* `LogAdapter.from_openai(messages: List[Dict[str, Any]], session_id: str = None, description: str = "") -> Dict[str, Any]`
+* `LogAdapter.from_openai(messages: List[Dict[str, Any]], session_id: str = None, description: str = "") -> Dict[str, Any]`  
   Parses standard OpenAI chat completion histories (`user`, `assistant`, `tool`, and `tool_calls`) into chronological graph nodes and directional transitions.
 
-* `LogAdapter.from_langsmith(run_data: Dict[str, Any], session_id: str = None) -> Dict[str, Any]`
+* `LogAdapter.from_langsmith(run_data: Dict[str, Any], session_id: str = None) -> Dict[str, Any]`  
   Converts LangChain and LangSmith run trees (including nested child runs, tool chains, and latency metadata) into a Limina trajectory schema.
 
-* `LogAdapter.auto_convert(raw_logs: Union[str, List, Dict], source: str = "auto") -> List[Dict[str, Any]]`
+* `LogAdapter.auto_convert(raw_logs: Union[str, List, Dict], source: str = "auto") -> List[Dict[str, Any]]`  
   Auto-detects log structure (file paths to `.json` files, raw JSON strings, OpenAI message lists, or LangSmith objects) and standardizes them for batch evaluation.
 
 ## Diagnostic Output Schema
@@ -230,7 +229,6 @@ Limina AI is engineered with a strict privacy-first architecture:
 * **No Model Training:** Customer data is never stored, aggregated, or used to train, fine-tune, or improve proprietary or foundation models.
 * **Cryptographic Key Isolation:** API keys are never stored in plaintext. All authentication checks rely on irreversible SHA-256 cryptographic hashes.
 * **Non-Blocking Runtime:** Tracing decorators run asynchronously on background threads to prevent latency overhead on host agents.
-
 
 ## License
 

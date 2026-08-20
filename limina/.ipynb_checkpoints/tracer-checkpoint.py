@@ -1,3 +1,4 @@
+import os
 import functools
 import time
 import json
@@ -7,23 +8,35 @@ from gradio_client import Client
 
 _active_session_context = threading.local()
 
+_DEFAULT_ENGINE_URL = "https://api.limina-ai.tech"
+
 class LiminaMonitor:
     """
-    Official Python SDK for Limina AI. Real-time Trajectory Diagnostics & Automated Prompt Patching.
+    Official Python SDK for Limina AI.
+    Real-time Trajectory Diagnostics & Automated Prompt Patching.
     """
     _instance = None
 
     def __init__(
         self, 
-        space_id: str = "sdawdsdw/limina-engine",
+        api_key: Optional[str] = None,
         profile: str = "standard",
-        export_html: bool = False
+        export_html: bool = False,
+        host: Optional[str] = None
     ):
-        self.api_key = api_key
-        self.space_id = space_id
+        self.api_key = api_key or os.getenv("LIMINA_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "[Limina AI]: API Key is missing. Pass it via LiminaMonitor(api_key='...') "
+                "or set the LIMINA_API_KEY environment variable."
+            )
+
         self.profile = profile.lower()
         self.export_html = export_html
-        self.client = Client(space_id)
+        self.target_url = host or _DEFAULT_ENGINE_URL
+        
+        # Conexiune automata la serverul tau
+        self.client = Client(self.target_url)
         self._threads = []
         LiminaMonitor._instance = self
 
@@ -39,7 +52,7 @@ class LiminaMonitor:
         return cls._instance
 
     def evaluate(self, payload: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Sends trajectories synchronously to Cloud ZeroGPU."""
+        """Sends trajectories synchronously to the Limina Engine."""
         try:
             raw_result_str = self.client.predict(
                 api_key=self.api_key,
