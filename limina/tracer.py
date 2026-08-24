@@ -34,8 +34,6 @@ class LiminaMonitor:
         self.profile = profile.lower()
         self.export_html = export_html
         self.target_url = host or _DEFAULT_ENGINE_URL
-        
-        # Conexiune automata la serverul tau
         self.client = Client(self.target_url)
         self._threads = []
         LiminaMonitor._instance = self
@@ -64,6 +62,13 @@ class LiminaMonitor:
             if "error" in result:
                 print(f"[Limina AI Error]: {result['error']}")
                 return result
+            if self.export_html and result.get("rendered_html"):
+                try:
+                    with open("report.html", "w", encoding="utf-8") as f:
+                        f.write(result["rendered_html"])
+                    print("[Limina AI]: Interactive visual report successfully generated at: report.html")
+                except Exception as html_err:
+                    print(f"[Limina AI Warning]: Could not save report.html locally: {html_err}")
 
             summary = result.get('executive_summary', {})
             print(f"[Limina AI]: Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
