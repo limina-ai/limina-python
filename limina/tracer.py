@@ -2,12 +2,15 @@ import os
 import functools
 import time
 import json
-import threading
+import inspect
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from typing import Optional, Callable, Any, Dict, List, Union
 from gradio_client import Client
 
-_active_session_context = threading.local()
 
+_active_session_ctx: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_active_session_ctx", default=None)
 _DEFAULT_ENGINE_URL = "https://api.limina-ai.tech"
 
 def load_local_limina_config() -> dict:
@@ -52,7 +55,7 @@ class LiminaMonitor:
         self.export_html = export_html
         self.target_url = host or _DEFAULT_ENGINE_URL
         self.client = Client(self.target_url)
-        self._threads = []
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
         LiminaMonitor._instance = self
 
     def set_profile(self, profile_name: str):
@@ -85,6 +88,7 @@ class LiminaMonitor:
             if "error" in result:
                 print(f"[Limina AI Error]: {result['error']}")
                 return result
+                
             if self.export_html and result.get("rendered_html"):
                 try:
                     with open("report.html", "w", encoding="utf-8") as f:
@@ -114,100 +118,186 @@ class LiminaMonitor:
             return {}
         return self.evaluate(trajectories, run_stress_test=run_stress_test)
 
-    def _send_to_cloud(self, payload: List[Dict[str, Any]]):
+    def _send_to_cloud_async(self, payload: List[Dict[str, Any]]):
+        """Ruleaza upload-ul non-blocking prin ThreadPoolExecutor."""
         def _worker():
             try:
                 self.evaluate(payload)
-            except Exception:
-                pass
-        t = threading.Thread(target=_worker, daemon=False)
-        self._threads.append(t)
-        t.start()
+            except Exception as e:
+                print(f"[Limina Background Sync Notice]: {e}")
+        self._executor.submit(_worker)
 
     def flush(self):
         """Waits for any pending background trace uploads to complete."""
-        for t in self._threads:
-            if t.is_alive():
-                t.join(timeout=10)
-        self._threads.clear()
+        self._executor.shutdown(wait=True)
+        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
 
     def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run", run_stress_test: bool = False):
         def decorator(func: Callable):
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                start_time = time.time()
-                user_text = str(args[0]) if args else str(kwargs)
+            if inspect.iscoroutinefunction(func):
+                @functools.wraps(func)
+                async def async_wrapper(*args, **kwargs):
+                    start_time = time.time()
+                    user_text = str(args[0]) if args else str(kwargs)
+                    ctx = {
+                        "nodes": [{"id": "n1", "type": "user", "text": user_text}],
+                        "edges": [],
+                        "last_node_id": "n1",
+                        "node_counter": 2
+                    }
+                    token = _active_session_ctx.set(ctx)
+                    try:
+                        result = await func(*args, **kwargs)
+                        output_text = str(result)
+                        return result
+                    except Exception as e:
+                        output_text = f"EXECUTION_ERROR: {str(e)}"
+                        raise e
+                    finally:
+                        duration_ms = (time.time() - start_time) * 1000.0
+                        active_ctx = _active_session_ctx.get()
+                        if active_ctx:
+                            agent_node_id = f"n{active_ctx['node_counter']}"
+                            active_ctx["nodes"].append({
+                                "id": agent_node_id,
+                                "type": "agent",
+                                "text": output_text,
+                                "execution_time_ms": round(duration_ms, 2)
+                            })
+                            active_ctx["edges"].append({
+                                "from": active_ctx["last_node_id"],
+                                "to": agent_node_id
+                            })
+                            payload = [{
+                                "session_id": session_id,
+                                "description": description,
+                                "nodes": active_ctx["nodes"],
+                                "edges": active_ctx["edges"],
+                                "run_stress_test": run_stress_test,
+                                "config": self.config
+                            }]
+                            self._send_to_cloud_async(payload)
+                        _active_session_ctx.reset(token)
 
-                _active_session_context.nodes = [{"id": "n1", "type": "user", "text": user_text}]
-                _active_session_context.edges = []
-                _active_session_context.last_node_id = "n1"
-                _active_session_context.node_counter = 2
+                return async_wrapper
 
-                try:
-                    result = func(*args, **kwargs)
-                    output_text = str(result)
-                    return result
-                except Exception as e:
-                    output_text = f"EXECUTION_ERROR: {str(e)}"
-                    raise e
-                finally:
-                    duration_ms = (time.time() - start_time) * 1000.0
-                    agent_node_id = f"n{_active_session_context.node_counter}"
-                    _active_session_context.nodes.append({
-                        "id": agent_node_id,
-                        "type": "agent",
-                        "text": output_text,
-                        "execution_time_ms": round(duration_ms, 2)
-                    })
-                    _active_session_context.edges.append({
-                        "from": _active_session_context.last_node_id,
-                        "to": agent_node_id
-                    })
+            else:
+                @functools.wraps(func)
+                def sync_wrapper(*args, **kwargs):
+                    start_time = time.time()
+                    user_text = str(args[0]) if args else str(kwargs)
+                    ctx = {
+                        "nodes": [{"id": "n1", "type": "user", "text": user_text}],
+                        "edges": [],
+                        "last_node_id": "n1",
+                        "node_counter": 2
+                    }
+                    token = _active_session_ctx.set(ctx)
+                    try:
+                        result = func(*args, **kwargs)
+                        output_text = str(result)
+                        return result
+                    except Exception as e:
+                        output_text = f"EXECUTION_ERROR: {str(e)}"
+                        raise e
+                    finally:
+                        duration_ms = (time.time() - start_time) * 1000.0
+                        active_ctx = _active_session_ctx.get()
+                        if active_ctx:
+                            agent_node_id = f"n{active_ctx['node_counter']}"
+                            active_ctx["nodes"].append({
+                                "id": agent_node_id,
+                                "type": "agent",
+                                "text": output_text,
+                                "execution_time_ms": round(duration_ms, 2)
+                            })
+                            active_ctx["edges"].append({
+                                "from": active_ctx["last_node_id"],
+                                "to": agent_node_id
+                            })
+                            payload = [{
+                                "session_id": session_id,
+                                "description": description,
+                                "nodes": active_ctx["nodes"],
+                                "edges": active_ctx["edges"],
+                                "run_stress_test": run_stress_test,
+                                "config": self.config
+                            }]
+                            self._send_to_cloud_async(payload)
+                        _active_session_ctx.reset(token)
 
-                    payload = [{
-                        "session_id": session_id,
-                        "description": description,
-                        "nodes": _active_session_context.nodes,
-                        "edges": _active_session_context.edges,
-                        "run_stress_test": run_stress_test,
-                        "config": self.config
-                    }]
-                    self._send_to_cloud(payload)
+                return sync_wrapper
 
-            return wrapper
         return decorator
 
     def trace_tool(self, tool_name: str = "custom_tool"):
         def decorator(func: Callable):
-            @functools.wraps(func)
-            def wrapper(*args, **kwargs):
-                start_time = time.time()
-                result = None
-                error_msg = None
-                try:
-                    result = func(*args, **kwargs)
-                    return result
-                except Exception as e:
-                    error_msg = str(e)
-                    raise e
-                finally:
-                    duration_ms = (time.time() - start_time) * 1000.0
-                    if hasattr(_active_session_context, "nodes"):
-                        tool_node_id = f"n{_active_session_context.node_counter}"
-                        _active_session_context.node_counter += 1
-                        tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
+            if inspect.iscoroutinefunction(func):
+                @functools.wraps(func)
+                async def async_tool_wrapper(*args, **kwargs):
+                    start_time = time.time()
+                    result = None
+                    error_msg = None
+                    try:
+                        result = await func(*args, **kwargs)
+                        return result
+                    except Exception as e:
+                        error_msg = str(e)
+                        raise e
+                    finally:
+                        duration_ms = (time.time() - start_time) * 1000.0
+                        active_ctx = _active_session_ctx.get()
+                        if active_ctx:
+                            tool_node_id = f"n{active_ctx['node_counter']}"
+                            active_ctx["node_counter"] += 1
+                            tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
 
-                        _active_session_context.nodes.append({
-                            "id": tool_node_id,
-                            "type": "tool",
-                            "text": tool_text,
-                            "execution_time_ms": round(duration_ms, 2)
-                        })
-                        _active_session_context.edges.append({
-                            "from": _active_session_context.last_node_id,
-                            "to": tool_node_id
-                        })
-                        _active_session_context.last_node_id = tool_node_id
+                            active_ctx["nodes"].append({
+                                "id": tool_node_id,
+                                "type": "tool",
+                                "text": tool_text,
+                                "execution_time_ms": round(duration_ms, 2)
+                            })
+                            active_ctx["edges"].append({
+                                "from": active_ctx["last_node_id"],
+                                "to": tool_node_id
+                            })
+                            active_ctx["last_node_id"] = tool_node_id
 
-            return wrapper
+                return async_tool_wrapper
+
+            else:
+                @functools.wraps(func)
+                def sync_tool_wrapper(*args, **kwargs):
+                    start_time = time.time()
+                    result = None
+                    error_msg = None
+                    try:
+                        result = func(*args, **kwargs)
+                        return result
+                    except Exception as e:
+                        error_msg = str(e)
+                        raise e
+                    finally:
+                        duration_ms = (time.time() - start_time) * 1000.0
+                        active_ctx = _active_session_ctx.get()
+                        if active_ctx:
+                            tool_node_id = f"n{active_ctx['node_counter']}"
+                            active_ctx["node_counter"] += 1
+                            tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
+
+                            active_ctx["nodes"].append({
+                                "id": tool_node_id,
+                                "type": "tool",
+                                "text": tool_text,
+                                "execution_time_ms": round(duration_ms, 2)
+                            })
+                            active_ctx["edges"].append({
+                                "from": active_ctx["last_node_id"],
+                                "to": tool_node_id
+                            })
+                            active_ctx["last_node_id"] = tool_node_id
+
+                return sync_tool_wrapper
+
         return decorator

@@ -13,7 +13,7 @@ pip install limina-ai
 Or install the development build directly from source:
 
 ```bash
-pip install git+https://github.com/YOUR_GITHUB_USERNAME/limina-python.git
+pip install git+https://github.com/limina-ai/limina-python.git
 ```
 
 ## Quickstart

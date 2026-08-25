@@ -1,8 +1,10 @@
 Metadata-Version: 2.4
 Name: limina-ai
-Version: 1.0.4
+Version: 1.0.5
 Summary: Deterministic Trajectory Diagnostics & Automated Prompt Patching for Multi-Turn AI Agents
+Home-page: https://github.com/YOUR_GITHUB_USERNAME/limina-python
 Author: Limina AI
+Author-email: contact@limina-ai.tech
 Keywords: ai-agents,llmops,trajectory-diagnostics,hallucination-detection,prompt-patching,langchain,openai,state-space-dag,cognitive-architecture
 Classifier: Development Status :: 5 - Production/Stable
 Classifier: Intended Audience :: Developers
@@ -24,9 +26,11 @@ License-File: LICENSE
 Requires-Dist: gradio_client>=0.17.0
 Requires-Dist: pyyaml>=6.0
 Dynamic: author
+Dynamic: author-email
 Dynamic: classifier
 Dynamic: description
 Dynamic: description-content-type
+Dynamic: home-page
 Dynamic: keywords
 Dynamic: license-file
 Dynamic: requires-dist
@@ -48,7 +52,7 @@ pip install limina-ai
 Or install the development build directly from source:
 
 ```bash
-pip install git+https://github.com/YOUR_GITHUB_USERNAME/limina-python.git
+pip install git+https://github.com/limina-ai/limina-python.git
 ```
 
 ## Quickstart

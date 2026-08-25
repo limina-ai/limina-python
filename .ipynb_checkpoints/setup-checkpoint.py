@@ -6,11 +6,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="limina-ai",
-    version="1.0.4",
+    version="1.0.5",
     author="Limina AI",
+    author_email="contact@limina-ai.tech",
     description="Deterministic Trajectory Diagnostics & Automated Prompt Patching for Multi-Turn AI Agents",
     long_description=long_description,
     long_description_content_type="text/markdown",
+    url="https://github.com/YOUR_GITHUB_USERNAME/limina-python",
     packages=find_packages(),
     keywords=[
         "ai-agents",

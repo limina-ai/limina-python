@@ -1,4 +1,5 @@
 import json
+import os
 import uuid
 from typing import List, Dict, Any, Union
 
@@ -7,9 +8,22 @@ class LogAdapter:
     Universal adapter to convert raw logs from OpenAI, LangSmith, LangChain, 
     and generic chat transcripts into Limina DAG trajectories.
     """
-
     @staticmethod
-    def from_openai(messages: List[Dict[str, Any]], session_id: str = None, description: str = "OpenAI Converted Session") -> Dict[str, Any]:
+    def _extract_text_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    texts.append(str(part.get("text", "")))
+                else:
+                    texts.append(str(part))
+            return " ".join(texts)
+        return str(content or "")
+
+    @classmethod
+    def from_openai(cls, messages: List[Dict[str, Any]], session_id: str = None, description: str = "OpenAI Converted Session") -> Dict[str, Any]:
         session_id = session_id or f"openai_session_{uuid.uuid4().hex[:8]}"
         nodes = []
         edges = []
@@ -17,12 +31,12 @@ class LogAdapter:
 
         for msg in messages:
             role = msg.get("role", "user")
-            content = msg.get("content") or ""
+            content = cls._extract_text_content(msg.get("content"))
             tool_calls = msg.get("tool_calls", [])
 
             if role == "user":
                 node_id = f"n{node_idx}"
-                nodes.append({"id": node_id, "type": "user", "label": "USER", "text": str(content)})
+                nodes.append({"id": node_id, "type": "user", "label": "USER", "text": content})
                 if node_idx > 1:
                     edges.append({"from": f"n{node_idx-1}", "to": node_id})
                 node_idx += 1
@@ -32,11 +46,13 @@ class LogAdapter:
                     node_id = f"n{node_idx}"
                     func_name = tc.get("function", {}).get("name", "tool_call")
                     func_args = tc.get("function", {}).get("arguments", "")
+                    
+                    text_repr = json.dumps({"tool": func_name, "args": func_args}) if isinstance(func_args, dict) else str(func_args)
                     nodes.append({
                         "id": node_id,
                         "type": "tool",
                         "label": func_name.upper(),
-                        "text": json.dumps({"tool": func_name, "args": func_args}) if isinstance(func_args, dict) else str(func_args),
+                        "text": text_repr,
                         "execution_time_ms": 150.0
                     })
                     if node_idx > 1:
@@ -45,22 +61,22 @@ class LogAdapter:
 
             elif role == "tool":
                 node_id = f"n{node_idx}"
-                nodes.append({"id": node_id, "type": "tool", "label": "TOOL_OUTPUT", "text": str(content), "execution_time_ms": 120.0})
+                nodes.append({"id": node_id, "type": "tool", "label": "TOOL_OUTPUT", "text": content, "execution_time_ms": 120.0})
                 if node_idx > 1:
                     edges.append({"from": f"n{node_idx-1}", "to": node_id})
                 node_idx += 1
 
             elif role == "assistant":
                 node_id = f"n{node_idx}"
-                nodes.append({"id": node_id, "type": "agent", "label": "AGENT", "text": str(content)})
+                nodes.append({"id": node_id, "type": "agent", "label": "AGENT", "text": content})
                 if node_idx > 1:
                     edges.append({"from": f"n{node_idx-1}", "to": node_id})
                 node_idx += 1
 
         return {"session_id": session_id, "description": description, "nodes": nodes, "edges": edges}
 
-    @staticmethod
-    def from_langsmith(run_data: Dict[str, Any], session_id: str = None) -> Dict[str, Any]:
+    @classmethod
+    def from_langsmith(cls, run_data: Dict[str, Any], session_id: str = None) -> Dict[str, Any]:
         session_id = session_id or run_data.get("id") or f"langchain_session_{uuid.uuid4().hex[:8]}"
         nodes = []
         edges = []
@@ -96,25 +112,34 @@ class LogAdapter:
     @classmethod
     def auto_convert(cls, raw_logs: Union[str, List, Dict], source: str = "auto") -> List[Dict[str, Any]]:
         if isinstance(raw_logs, str):
-            with open(raw_logs, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            trimmed = raw_logs.strip()
+            if (trimmed.startswith("{") or trimmed.startswith("[")) and not os.path.isfile(raw_logs):
+                try:
+                    data = json.loads(trimmed)
+                except Exception:
+                    data = raw_logs
+            elif os.path.isfile(raw_logs):
+                with open(raw_logs, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                try:
+                    data = json.loads(raw_logs)
+                except Exception:
+                    return []
         else:
             data = raw_logs
 
         if not data:
             return []
 
-        # Deja in format DAG
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "nodes" in data[0] and "edges" in data[0]:
             return data
 
-        # Cazul 1: O singura conversatie OpenAI (lista de mesaje cu 'role')
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "role" in data[0]:
             return [cls.from_openai(data, session_id="openai_single_session")]
 
         trajectories = []
 
-        # Cazul 2: Lista de sesiuni multiple
         if isinstance(data, list):
             for idx, item in enumerate(data):
                 if isinstance(item, list):
