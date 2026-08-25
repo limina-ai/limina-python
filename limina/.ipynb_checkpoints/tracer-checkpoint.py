@@ -10,6 +10,22 @@ _active_session_context = threading.local()
 
 _DEFAULT_ENGINE_URL = "https://api.limina-ai.tech"
 
+def load_local_limina_config() -> dict:
+    for filename in ["limina.yaml", "limina.yml"]:
+        if os.path.exists(filename):
+            try:
+                import yaml
+                with open(filename, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f)
+                    if isinstance(cfg, dict):
+                        print(f"[Limina AI]: Loaded declarative policy from [{filename}]")
+                        return cfg
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"[Limina AI Warning]: Could not parse {filename}: {e}")
+    return {}
+
 class LiminaMonitor:
     """
     Official Python SDK for Limina AI.
@@ -20,7 +36,7 @@ class LiminaMonitor:
     def __init__(
         self, 
         api_key: Optional[str] = None,
-        profile: str = "standard",
+        profile: Optional[str] = None,
         export_html: bool = False,
         host: Optional[str] = None
     ):
@@ -30,8 +46,9 @@ class LiminaMonitor:
                 "[Limina AI]: API Key is missing. Pass it via LiminaMonitor(api_key='...') "
                 "or set the LIMINA_API_KEY environment variable."
             )
-
-        self.profile = profile.lower()
+        self.config = load_local_limina_config()
+        active_prof = profile or self.config.get("strictness_profile") or "standard"
+        self.profile = str(active_prof).lower()
         self.export_html = export_html
         self.target_url = host or _DEFAULT_ENGINE_URL
         self.client = Client(self.target_url)
@@ -49,9 +66,15 @@ class LiminaMonitor:
             raise RuntimeError("LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
         return cls._instance
 
-    def evaluate(self, payload: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Sends trajectories synchronously to the Limina Engine."""
+    def evaluate(self, payload: List[Dict[str, Any]], run_stress_test: bool = False) -> Dict[str, Any]:
+        """Sends trajectories synchronously to the Limina Engine with declarative config."""
         try:
+            for session in payload:
+                if "config" not in session:
+                    session["config"] = self.config
+                if "run_stress_test" not in session:
+                    session["run_stress_test"] = run_stress_test
+
             raw_result_str = self.client.predict(
                 api_key=self.api_key,
                 payload_json=json.dumps(payload),
@@ -66,7 +89,7 @@ class LiminaMonitor:
                 try:
                     with open("report.html", "w", encoding="utf-8") as f:
                         f.write(result["rendered_html"])
-                    print("[Limina AI]: Interactive visual report successfully generated at: report.html")
+                    print("[Limina AI]: Standalone interactive visual report saved to: report.html")
                 except Exception as html_err:
                     print(f"[Limina AI Warning]: Could not save report.html locally: {html_err}")
 
@@ -77,13 +100,19 @@ class LiminaMonitor:
             print(f"[Limina AI Error]: Evaluation failed: {e}")
             return {"status": "ERROR", "error": str(e)}
 
-    def evaluate_logs(self, input_data: Union[str, List[Dict[str, Any]], Dict[str, Any]], source: str = "auto") -> Dict[str, Any]:
+    def evaluate_logs(
+        self, 
+        input_data: Union[str, List[Dict[str, Any]], Dict[str, Any]], 
+        source: str = "auto",
+        run_stress_test: bool = False
+    ) -> Dict[str, Any]:
+        """Auto-converts logs and runs batch evaluation."""
         from .adapters import LogAdapter
         trajectories = LogAdapter.auto_convert(input_data, source=source)
         if not trajectories:
             print("[Limina AI Warning]: No valid trajectories extracted from input logs.")
             return {}
-        return self.evaluate(trajectories)
+        return self.evaluate(trajectories, run_stress_test=run_stress_test)
 
     def _send_to_cloud(self, payload: List[Dict[str, Any]]):
         def _worker():
@@ -102,7 +131,7 @@ class LiminaMonitor:
                 t.join(timeout=10)
         self._threads.clear()
 
-    def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run"):
+    def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run", run_stress_test: bool = False):
         def decorator(func: Callable):
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
@@ -139,7 +168,9 @@ class LiminaMonitor:
                         "session_id": session_id,
                         "description": description,
                         "nodes": _active_session_context.nodes,
-                        "edges": _active_session_context.edges
+                        "edges": _active_session_context.edges,
+                        "run_stress_test": run_stress_test,
+                        "config": self.config
                     }]
                     self._send_to_cloud(payload)
 

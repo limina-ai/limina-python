@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: limina-ai
-Version: 1.0.3
+Version: 1.0.4
 Summary: Deterministic Trajectory Diagnostics & Automated Prompt Patching for Multi-Turn AI Agents
 Author: Limina AI
 Keywords: ai-agents,llmops,trajectory-diagnostics,hallucination-detection,prompt-patching,langchain,openai,state-space-dag,cognitive-architecture
@@ -22,6 +22,7 @@ Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: gradio_client>=0.17.0
+Requires-Dist: pyyaml>=6.0
 Dynamic: author
 Dynamic: classifier
 Dynamic: description

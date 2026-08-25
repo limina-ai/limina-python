@@ -1,1 +1,2 @@
 gradio_client>=0.17.0
+pyyaml>=6.0

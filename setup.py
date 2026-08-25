@@ -1,3 +1,4 @@
+# setup.py
 from setuptools import setup, find_packages
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -5,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="limina-ai",
-    version="1.0.3",
+    version="1.0.4",
     author="Limina AI",
     description="Deterministic Trajectory Diagnostics & Automated Prompt Patching for Multi-Turn AI Agents",
     long_description=long_description,
@@ -39,7 +40,8 @@ setup(
         "Topic :: Software Development :: Testing",
     ],
     install_requires=[
-        "gradio_client>=0.17.0"
+        "gradio_client>=0.17.0",
+        "pyyaml>=6.0"
     ],
     python_requires=">=3.8",
     include_package_data=True,
