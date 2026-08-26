@@ -9,7 +9,6 @@ from contextvars import ContextVar
 from typing import Optional, Callable, Any, Dict, List, Union
 from gradio_client import Client
 
-
 _active_session_ctx: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_active_session_ctx", default=None)
 _DEFAULT_ENGINE_URL = "https://api.limina-ai.tech"
 
@@ -32,7 +31,7 @@ def load_local_limina_config() -> dict:
 class LiminaMonitor:
     """
     Official Python SDK for Limina AI.
-    Real-time Trajectory Diagnostics & Automated Prompt Patching.
+    Real-time Trajectory Diagnostics, Regression Testing & Automated Prompt Patching.
     """
     _instance = None
 
@@ -117,9 +116,68 @@ class LiminaMonitor:
             print("[Limina AI Warning]: No valid trajectories extracted from input logs.")
             return {}
         return self.evaluate(trajectories, run_stress_test=run_stress_test)
+        
+    def compare(
+        self, 
+        baseline_logs: Union[str, List[Dict[str, Any]], Dict[str, Any]], 
+        candidate_logs: Union[str, List[Dict[str, Any]], Dict[str, Any]],
+        source: str = "auto",
+        fail_on_regression: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Compares Baseline vs. Candidate agent trajectories.
+        Returns mathematical delta scores, error resolution matrix and CI/CD gate status.
+        If fail_on_regression=True, raises RuntimeError when regressions are detected to block CI/CD.
+        """
+        from .adapters import LogAdapter
+        base_trajectories = LogAdapter.auto_convert(baseline_logs, source=source)
+        cand_trajectories = LogAdapter.auto_convert(candidate_logs, source=source)
+        
+        if not base_trajectories or not cand_trajectories:
+            print("[Limina AI Error]: Could not extract valid trajectories for comparison.")
+            return {}
+
+        for session in base_trajectories:
+            if "config" not in session:
+                session["config"] = self.config
+        for session in cand_trajectories:
+            if "config" not in session:
+                session["config"] = self.config
+
+        try:
+            raw_result_str = self.client.predict(
+                api_key=self.api_key,
+                baseline_json=json.dumps(base_trajectories),
+                candidate_json=json.dumps(cand_trajectories),
+                api_name="/compare"
+            )
+            result = json.loads(raw_result_str)
+            
+            diff = result.get("regression_analysis", {})
+            metrics = diff.get("metrics", {})
+            verdict = diff.get("verdict", "UNKNOWN")
+            ci_status = diff.get("ci_gate_status", "UNKNOWN")
+            
+            print("\n[limina] Regression Verdict: " + verdict + " (Gate: " + ci_status + ")")
+            print("-" * 50)
+            print(f"  Δ Accuracy   : {metrics.get('delta_accuracy_percentage', 0.0):+0.1f}% ({metrics.get('baseline_accuracy', 0.0)}% -> {metrics.get('candidate_accuracy', 0.0)}%)")
+            print(f"  Latency      : {metrics.get('baseline_latency_ms', 0.0)}ms -> {metrics.get('candidate_latency_ms', 0.0)}ms ({metrics.get('delta_latency_ms', 0.0):+0.1f}ms)")
+            print(f"  Fixed        : {diff.get('breakdown', {}).get('fixed_count', 0)} resolved")
+            print(f"  Regressions  : {diff.get('breakdown', {}).get('new_regressions_count', 0)} broken")
+            print(f"  Action       : {diff.get('recommendation')}")
+            print("-" * 50 + "\n")
+
+            if fail_on_regression and ci_status == "BLOCKED":
+                raise RuntimeError(f"[Limina CI Gate Failed]: Pull Request blocked due to {diff.get('breakdown', {}).get('new_regressions_count', 0)} new regressions detected.")
+            
+            return result
+        except Exception as e:
+            if fail_on_regression and "Limina CI Gate Failed" in str(e):
+                raise e
+            print(f"[Limina Regression Error]: Comparison failed: {e}")
+            return {"status": "ERROR", "error": str(e)}
 
     def _send_to_cloud_async(self, payload: List[Dict[str, Any]]):
-        """Ruleaza upload-ul non-blocking prin ThreadPoolExecutor."""
         def _worker():
             try:
                 self.evaluate(payload)
