@@ -1,0 +1,29 @@
+name: Limina AI Agent Regression Gate
+
+on:
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  regression-gate:
+    name: Trajectory Regression Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Limina Regression Evaluation
+        uses: Limina-AI/limina-python@v1
+        with:
+          api-key: ${{ secrets.LIMINA_API_KEY }}
+          baseline: 'tests/eval_datasets/baseline_golden.json'
+          candidate: 'tests/eval_datasets/candidate_patch.json'
+          fail-on-regression: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-on-pr: 'true'
