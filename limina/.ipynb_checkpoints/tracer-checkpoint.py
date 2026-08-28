@@ -3,11 +3,10 @@ import functools
 import time
 import json
 import inspect
-import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import Optional, Callable, Any, Dict, List, Union
-from gradio_client import Client
 
 _active_session_ctx: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_active_session_ctx", default=None)
 _DEFAULT_ENGINE_URL = "https://api.limina-ai.tech"
@@ -20,12 +19,12 @@ def load_local_limina_config() -> dict:
                 with open(filename, "r", encoding="utf-8") as f:
                     cfg = yaml.safe_load(f)
                     if isinstance(cfg, dict):
-                        print(f"[Limina AI]: Loaded declarative policy from [{filename}]")
+                        print(f"[limina] Loaded declarative policy from [{filename}]")
                         return cfg
             except ImportError:
                 pass
             except Exception as e:
-                print(f"[Limina AI Warning]: Could not parse {filename}: {e}")
+                print(f"[limina] Warning: Could not parse {filename}: {e}")
     return {}
 
 class LiminaMonitor:
@@ -45,7 +44,7 @@ class LiminaMonitor:
         self.api_key = api_key or os.getenv("LIMINA_API_KEY")
         if not self.api_key:
             raise ValueError(
-                "[Limina AI]: API Key is missing. Pass it via LiminaMonitor(api_key='...') "
+                "[limina] API Key is missing. Pass it via LiminaMonitor(api_key='...') "
                 "or set the LIMINA_API_KEY environment variable."
             )
         self.config = load_local_limina_config()
@@ -53,19 +52,29 @@ class LiminaMonitor:
         self.profile = str(active_prof).lower()
         self.export_html = export_html
         self.target_url = host or _DEFAULT_ENGINE_URL
-        self.client = Client(self.target_url)
+        self._client = None
+        self._client_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
         LiminaMonitor._instance = self
 
+    @property
+    def client(self):
+        """Lazy-loaded Gradio Client to prevent blocking on network during SDK import."""
+        if self._client is None:
+            with self._client_lock:
+                if self._client is None:
+                    from gradio_client import Client
+                    self._client = Client(self.target_url)
+        return self._client
+
     def set_profile(self, profile_name: str):
-        """Sets the active strictness profile ('standard', 'banking', 'healthcare', 'customer_support', 'creative')."""
         self.profile = profile_name.lower()
-        print(f"[Limina AI]: Active evaluation profile set to: [{self.profile}]")
+        print(f"[limina] Active evaluation profile set to: [{self.profile}]")
 
     @classmethod
     def get_instance(cls):
         if not cls._instance:
-            raise RuntimeError("LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
+            raise RuntimeError("[limina] LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
         return cls._instance
 
     def evaluate(self, payload: List[Dict[str, Any]], run_stress_test: bool = False) -> Dict[str, Any]:
@@ -85,22 +94,22 @@ class LiminaMonitor:
             result = json.loads(raw_result_str)
 
             if "error" in result:
-                print(f"[Limina AI Error]: {result['error']}")
+                print(f"[limina] Error: {result['error']}")
                 return result
                 
             if self.export_html and result.get("rendered_html"):
                 try:
                     with open("report.html", "w", encoding="utf-8") as f:
                         f.write(result["rendered_html"])
-                    print("[Limina AI]: Standalone interactive visual report saved to: report.html")
+                    print("[limina] Standalone visual report saved to: report.html")
                 except Exception as html_err:
-                    print(f"[Limina AI Warning]: Could not save report.html locally: {html_err}")
+                    print(f"[limina] Warning: Could not save report.html: {html_err}")
 
             summary = result.get('executive_summary', {})
-            print(f"[Limina AI]: Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
+            print(f"[limina] Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
             return result
         except Exception as e:
-            print(f"[Limina AI Error]: Evaluation failed: {e}")
+            print(f"[limina] Error: Evaluation failed: {e}")
             return {"status": "ERROR", "error": str(e)}
 
     def evaluate_logs(
@@ -113,7 +122,7 @@ class LiminaMonitor:
         from .adapters import LogAdapter
         trajectories = LogAdapter.auto_convert(input_data, source=source)
         if not trajectories:
-            print("[Limina AI Warning]: No valid trajectories extracted from input logs.")
+            print("[limina] Warning: No valid trajectories extracted from input logs.")
             return {}
         return self.evaluate(trajectories, run_stress_test=run_stress_test)
         
@@ -125,16 +134,15 @@ class LiminaMonitor:
         fail_on_regression: bool = False
     ) -> Dict[str, Any]:
         """
-        Compares Baseline vs. Candidate agent trajectories.
-        Returns mathematical delta scores, error resolution matrix and CI/CD gate status.
-        If fail_on_regression=True, raises RuntimeError when regressions are detected to block CI/CD.
+        Compares Baseline vs. Candidate agent trajectories across a 4-Quadrant State Matrix.
+        Raises RuntimeError on detected regressions if fail_on_regression=True (CI Gate Block).
         """
         from .adapters import LogAdapter
         base_trajectories = LogAdapter.auto_convert(baseline_logs, source=source)
         cand_trajectories = LogAdapter.auto_convert(candidate_logs, source=source)
         
         if not base_trajectories or not cand_trajectories:
-            print("[Limina AI Error]: Could not extract valid trajectories for comparison.")
+            print("[limina] Error: Could not extract valid trajectories for comparison.")
             return {}
 
         for session in base_trajectories:
@@ -152,41 +160,40 @@ class LiminaMonitor:
                 api_name="/compare"
             )
             result = json.loads(raw_result_str)
+        except Exception as net_err:
+            print(f"[limina] Error: Comparison network failure: {net_err}")
+            return {"status": "ERROR", "error": str(net_err)}
             
-            diff = result.get("regression_analysis", {})
-            metrics = diff.get("metrics", {})
-            verdict = diff.get("verdict", "UNKNOWN")
-            ci_status = diff.get("ci_gate_status", "UNKNOWN")
-            
-            print("\n[limina] Regression Verdict: " + verdict + " (Gate: " + ci_status + ")")
-            print("-" * 50)
-            print(f"  Δ Accuracy   : {metrics.get('delta_accuracy_percentage', 0.0):+0.1f}% ({metrics.get('baseline_accuracy', 0.0)}% -> {metrics.get('candidate_accuracy', 0.0)}%)")
-            print(f"  Latency      : {metrics.get('baseline_latency_ms', 0.0)}ms -> {metrics.get('candidate_latency_ms', 0.0)}ms ({metrics.get('delta_latency_ms', 0.0):+0.1f}ms)")
-            print(f"  Fixed        : {diff.get('breakdown', {}).get('fixed_count', 0)} resolved")
-            print(f"  Regressions  : {diff.get('breakdown', {}).get('new_regressions_count', 0)} broken")
-            print(f"  Action       : {diff.get('recommendation')}")
-            print("-" * 50 + "\n")
+        diff = result.get("regression_analysis", {})
+        metrics = diff.get("metrics", {})
+        verdict = diff.get("verdict", "UNKNOWN")
+        ci_status = diff.get("ci_gate_status", "UNKNOWN")
+        
+        print(f"\n[limina] Regression Verdict: {verdict} (Gate: {ci_status})")
+        print("-" * 52)
+        print(f"  Δ Accuracy   : {metrics.get('delta_accuracy_percentage', 0.0):+0.1f}% ({metrics.get('baseline_accuracy', 0.0)}% -> {metrics.get('candidate_accuracy', 0.0)}%)")
+        print(f"  Latency      : {metrics.get('baseline_latency_ms', 0.0)}ms -> {metrics.get('candidate_latency_ms', 0.0)}ms ({metrics.get('delta_latency_ms', 0.0):+0.1f}ms)")
+        print(f"  Fixed        : {diff.get('breakdown', {}).get('fixed_count', 0)} resolved")
+        print(f"  Regressions  : {diff.get('breakdown', {}).get('new_regressions_count', 0)} broken")
+        print(f"  Action       : {diff.get('recommendation')}")
+        print("-" * 52 + "\n")
 
-            if fail_on_regression and ci_status == "BLOCKED":
-                raise RuntimeError(f"[Limina CI Gate Failed]: Pull Request blocked due to {diff.get('breakdown', {}).get('new_regressions_count', 0)} new regressions detected.")
-            
-            return result
-        except Exception as e:
-            if fail_on_regression and "Limina CI Gate Failed" in str(e):
-                raise e
-            print(f"[Limina Regression Error]: Comparison failed: {e}")
-            return {"status": "ERROR", "error": str(e)}
+        if fail_on_regression and ci_status == "BLOCKED":
+            reg_count = diff.get('breakdown', {}).get('new_regressions_count', 0)
+            raise RuntimeError(f"[limina] CI Gate Blocked: {reg_count} new regression(s) detected. PR cannot be merged.")
+        
+        return result
 
     def _send_to_cloud_async(self, payload: List[Dict[str, Any]]):
         def _worker():
             try:
                 self.evaluate(payload)
             except Exception as e:
-                print(f"[Limina Background Sync Notice]: {e}")
+                print(f"[limina] Background Sync Notice: {e}")
         self._executor.submit(_worker)
 
     def flush(self):
-        """Waits for any pending background trace uploads to complete."""
+        """Waits for all pending background trace uploads to complete."""
         self._executor.shutdown(wait=True)
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
 
@@ -201,7 +208,8 @@ class LiminaMonitor:
                         "nodes": [{"id": "n1", "type": "user", "text": user_text}],
                         "edges": [],
                         "last_node_id": "n1",
-                        "node_counter": 2
+                        "node_counter": 2,
+                        "lock": threading.Lock()
                     }
                     token = _active_session_ctx.set(ctx)
                     try:
@@ -215,25 +223,26 @@ class LiminaMonitor:
                         duration_ms = (time.time() - start_time) * 1000.0
                         active_ctx = _active_session_ctx.get()
                         if active_ctx:
-                            agent_node_id = f"n{active_ctx['node_counter']}"
-                            active_ctx["nodes"].append({
-                                "id": agent_node_id,
-                                "type": "agent",
-                                "text": output_text,
-                                "execution_time_ms": round(duration_ms, 2)
-                            })
-                            active_ctx["edges"].append({
-                                "from": active_ctx["last_node_id"],
-                                "to": agent_node_id
-                            })
-                            payload = [{
-                                "session_id": session_id,
-                                "description": description,
-                                "nodes": active_ctx["nodes"],
-                                "edges": active_ctx["edges"],
-                                "run_stress_test": run_stress_test,
-                                "config": self.config
-                            }]
+                            with active_ctx["lock"]:
+                                agent_node_id = f"n{active_ctx['node_counter']}"
+                                active_ctx["nodes"].append({
+                                    "id": agent_node_id,
+                                    "type": "agent",
+                                    "text": output_text,
+                                    "execution_time_ms": round(duration_ms, 2)
+                                })
+                                active_ctx["edges"].append({
+                                    "from": active_ctx["last_node_id"],
+                                    "to": agent_node_id
+                                })
+                                payload = [{
+                                    "session_id": session_id,
+                                    "description": description,
+                                    "nodes": active_ctx["nodes"],
+                                    "edges": active_ctx["edges"],
+                                    "run_stress_test": run_stress_test,
+                                    "config": self.config
+                                }]
                             self._send_to_cloud_async(payload)
                         _active_session_ctx.reset(token)
 
@@ -248,7 +257,8 @@ class LiminaMonitor:
                         "nodes": [{"id": "n1", "type": "user", "text": user_text}],
                         "edges": [],
                         "last_node_id": "n1",
-                        "node_counter": 2
+                        "node_counter": 2,
+                        "lock": threading.Lock()
                     }
                     token = _active_session_ctx.set(ctx)
                     try:
@@ -262,25 +272,26 @@ class LiminaMonitor:
                         duration_ms = (time.time() - start_time) * 1000.0
                         active_ctx = _active_session_ctx.get()
                         if active_ctx:
-                            agent_node_id = f"n{active_ctx['node_counter']}"
-                            active_ctx["nodes"].append({
-                                "id": agent_node_id,
-                                "type": "agent",
-                                "text": output_text,
-                                "execution_time_ms": round(duration_ms, 2)
-                            })
-                            active_ctx["edges"].append({
-                                "from": active_ctx["last_node_id"],
-                                "to": agent_node_id
-                            })
-                            payload = [{
-                                "session_id": session_id,
-                                "description": description,
-                                "nodes": active_ctx["nodes"],
-                                "edges": active_ctx["edges"],
-                                "run_stress_test": run_stress_test,
-                                "config": self.config
-                            }]
+                            with active_ctx["lock"]:
+                                agent_node_id = f"n{active_ctx['node_counter']}"
+                                active_ctx["nodes"].append({
+                                    "id": agent_node_id,
+                                    "type": "agent",
+                                    "text": output_text,
+                                    "execution_time_ms": round(duration_ms, 2)
+                                })
+                                active_ctx["edges"].append({
+                                    "from": active_ctx["last_node_id"],
+                                    "to": agent_node_id
+                                })
+                                payload = [{
+                                    "session_id": session_id,
+                                    "description": description,
+                                    "nodes": active_ctx["nodes"],
+                                    "edges": active_ctx["edges"],
+                                    "run_stress_test": run_stress_test,
+                                    "config": self.config
+                                }]
                             self._send_to_cloud_async(payload)
                         _active_session_ctx.reset(token)
 
@@ -306,21 +317,22 @@ class LiminaMonitor:
                         duration_ms = (time.time() - start_time) * 1000.0
                         active_ctx = _active_session_ctx.get()
                         if active_ctx:
-                            tool_node_id = f"n{active_ctx['node_counter']}"
-                            active_ctx["node_counter"] += 1
-                            tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
+                            with active_ctx["lock"]:
+                                tool_node_id = f"n{active_ctx['node_counter']}"
+                                active_ctx["node_counter"] += 1
+                                tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
 
-                            active_ctx["nodes"].append({
-                                "id": tool_node_id,
-                                "type": "tool",
-                                "text": tool_text,
-                                "execution_time_ms": round(duration_ms, 2)
-                            })
-                            active_ctx["edges"].append({
-                                "from": active_ctx["last_node_id"],
-                                "to": tool_node_id
-                            })
-                            active_ctx["last_node_id"] = tool_node_id
+                                active_ctx["nodes"].append({
+                                    "id": tool_node_id,
+                                    "type": "tool",
+                                    "text": tool_text,
+                                    "execution_time_ms": round(duration_ms, 2)
+                                })
+                                active_ctx["edges"].append({
+                                    "from": active_ctx["last_node_id"],
+                                    "to": tool_node_id
+                                })
+                                active_ctx["last_node_id"] = tool_node_id
 
                 return async_tool_wrapper
 
@@ -340,21 +352,22 @@ class LiminaMonitor:
                         duration_ms = (time.time() - start_time) * 1000.0
                         active_ctx = _active_session_ctx.get()
                         if active_ctx:
-                            tool_node_id = f"n{active_ctx['node_counter']}"
-                            active_ctx["node_counter"] += 1
-                            tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
+                            with active_ctx["lock"]:
+                                tool_node_id = f"n{active_ctx['node_counter']}"
+                                active_ctx["node_counter"] += 1
+                                tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
 
-                            active_ctx["nodes"].append({
-                                "id": tool_node_id,
-                                "type": "tool",
-                                "text": tool_text,
-                                "execution_time_ms": round(duration_ms, 2)
-                            })
-                            active_ctx["edges"].append({
-                                "from": active_ctx["last_node_id"],
-                                "to": tool_node_id
-                            })
-                            active_ctx["last_node_id"] = tool_node_id
+                                active_ctx["nodes"].append({
+                                    "id": tool_node_id,
+                                    "type": "tool",
+                                    "text": tool_text,
+                                    "execution_time_ms": round(duration_ms, 2)
+                                })
+                                active_ctx["edges"].append({
+                                    "from": active_ctx["last_node_id"],
+                                    "to": tool_node_id
+                                })
+                                active_ctx["last_node_id"] = tool_node_id
 
                 return sync_tool_wrapper
 

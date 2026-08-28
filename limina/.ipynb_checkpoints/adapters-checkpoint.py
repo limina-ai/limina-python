@@ -135,6 +135,9 @@ class LogAdapter:
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "nodes" in data[0] and "edges" in data[0]:
             return data
 
+        if isinstance(data, dict) and "nodes" in data and "edges" in data:
+            return [data]
+
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict) and "role" in data[0]:
             return [cls.from_openai(data, session_id="openai_single_session")]
 
@@ -144,20 +147,23 @@ class LogAdapter:
             for idx, item in enumerate(data):
                 if isinstance(item, list):
                     trajectories.append(cls.from_openai(item, session_id=f"openai_session_{idx+1}"))
-                elif isinstance(item, dict) and "messages" in item:
-                    trajectories.append(cls.from_openai(item["messages"], session_id=item.get("session_id", f"session_{idx+1}")))
-                elif isinstance(item, dict) and ("run_type" in item or "child_runs" in item):
-                    trajectories.append(cls.from_langsmith(item, session_id=item.get("id", f"langsmith_session_{idx+1}")))
-                elif isinstance(item, dict) and ("input" in item and "output" in item):
-                    trajectories.append({
-                        "session_id": item.get("session_id", f"session_{idx+1}"),
-                        "description": item.get("description", "Converted Generic Trace"),
-                        "nodes": [
-                            {"id": "n1", "type": "user", "label": "USER", "text": str(item["input"])},
-                            {"id": "n2", "type": "agent", "label": "AGENT", "text": str(item["output"])}
-                        ],
-                        "edges": [{"from": "n1", "to": "n2"}]
-                    })
+                elif isinstance(item, dict):
+                    if "nodes" in item and "edges" in item:
+                        trajectories.append(item)
+                    elif "messages" in item:
+                        trajectories.append(cls.from_openai(item["messages"], session_id=item.get("session_id", f"session_{idx+1}")))
+                    elif "run_type" in item or "child_runs" in item:
+                        trajectories.append(cls.from_langsmith(item, session_id=item.get("id", f"langsmith_session_{idx+1}")))
+                    elif "input" in item and "output" in item:
+                        trajectories.append({
+                            "session_id": item.get("session_id", f"session_{idx+1}"),
+                            "description": item.get("description", "Converted Generic Trace"),
+                            "nodes": [
+                                {"id": "n1", "type": "user", "label": "USER", "text": str(item["input"])},
+                                {"id": "n2", "type": "agent", "label": "AGENT", "text": str(item["output"])}
+                            ],
+                            "edges": [{"from": "n1", "to": "n2"}]
+                        })
 
         elif isinstance(data, dict):
             if "child_runs" in data or "run_type" in data:
