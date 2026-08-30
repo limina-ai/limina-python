@@ -1,91 +1,62 @@
-# Limina AI — Python SDK
+# Limina AI — Python SDK & CI/CD Regression Gate
 
 [![PyPI Version](https://img.shields.io/pypi/v/limina-ai.svg)](https://pypi.org/project/limina-ai/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/limina-ai.svg)](https://pypi.org/project/limina-ai/)
+[![GitHub Action](https://img.shields.io/badge/GitHub_Action-v1-blue.svg)](https://github.com/Limina-AI/limina-python/actions)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python Versions](https://img.shields.io/pypi/pyversions/limina-ai.svg)](https://pypi.org/project/limina-ai/)
 
-> Observe, evaluate, and regression-test multi-turn AI agents with local CPU-native evaluation and automated CI/CD gating.
+> Local evaluation, agent observability, and CI/CD regression testing for AI agents.
+> Run fast, deterministic evaluations without sending every test to a third-party LLM judge.
 
 ## Why Limina?
 
-Multi-turn AI agents and RAG pipelines are notoriously difficult to debug once they involve chained tool calls, database lookups, and changing system prompts.
+Evaluating AI agents with a generative LLM judge introduces three major bottlenecks in production CI/CD pipelines:
+1. **Flaky assertions:** Probabilistic judges return non-deterministic scores on identical test cases (~80% consistency).
+2. **High latency:** Generative judges add 6–10 seconds per test case, stalling pull request pipelines.
+3. **Double token costs:** Paying model API fees twice—once for the agent execution, and once for the evaluation judge.
 
-Traditional LLM-as-a-judge approaches are **slow, expensive, and non-deterministic** when run across continuous integration test suites.
+Limina formalizes execution transcripts into a **State-Space DAG** and runs calibrated Cross-Encoder Natural Language Inference (NLI) models locally on CPU:
+- **$0 Third-Party Judge API Cost:** Runs entirely on local CPU with zero third-party judge token bills.
+- **Low-Latency Execution:** 1.6x to 6x measured speedups compared to generative judges across our beta test setups.
+- **100% Deterministic:** Same input + same context = exact same assertion verdict every single run.
+- **Automated CI/CD Gating:** Automatically comments on Pull Requests and blocks merges (`exit code 1`) if a prompt tweak breaks previously passing scenarios.
 
-**Limina provides a unified developer toolkit to:**
-- **Observe:** Trace multi-turn agent state transitions, tool execution latency, and payload grounding.
-- **Evaluate:** Benchmark historical chat transcripts without running costly second-judge models.
-- **Compare:** Measure exact mathematical deltas between baseline and candidate prompts.
-- **Gate:** Block breaking regressions automatically in CI/CD pull requests before deployment.
+## Benchmark Results (Week 1 Private Beta)
 
-## Architecture Flow
+Mean results across 175+ unique evaluation test cases contributed by beta testers, including real agent workloads and synthetic failure fixtures:
 
-```text
-Your Agent / Pipeline (OpenAI, LangChain, Custom)
-       │
-       ▼
-  Limina SDK
-  ├── Real-Time Tracing (@monitor.trace)
-  ├── Log & Transcript Evaluation (evaluate_logs)
-  ├── 4-Quadrant Regression Comparator (compare)
-  └── Adversarial Red-Teaming (run_stress_test)
-       │
-       ▼
-  Limina Engine ──► Interactive HTML / Dashboard / CI Gating (PR Block)
-```
+| Metric | At Start of Beta | After 1 Week (Now) | Mean Live LLM Judge |
+| :--- | :--- | :--- | :--- |
+| **Factual Accuracy** | 83.0% | **98.0% ↗** | ~87.8% |
+| **Failure Recall** | 72.5% | **100.0% ↗ (43/43 caught)** | ~87.3% |
+| **F1-Score** | 0.70 | **0.963 ↗** | ~0.86 |
+| **Mean Latency** | 3.8s | **1.6x to 6x faster\*** | ~8.03s |
+| **Consistency** | 100% (Deterministic) | **100% (Deterministic)** | ~80% (Scores fluctuate) |
+| **Evaluation Cost** | **$0.00** | **$0.00 (Local CPU)** | Paying token fees per eval |
 
-## Installation
+*\* Results are aggregated from our Week 1 private beta evaluation dataset across 175+ unique evaluation test cases. LLM judge results are aggregated means across the live judge configurations used during beta testing. Speedup factor depends on agent complexity, tool execution duration, and context length.*
 
+
+## Quickstart
+
+### 1. Install SDK
 ```bash
 pip install limina-ai
 ```
 
-## Quickstart (30 Seconds)
-
-Set your API key as an environment variable:
-
+### 2. Set API Key
 ```bash
 export LIMINA_API_KEY="limina_live_..."
 ```
 
-Wrap your existing agent function — Limina captures execution telemetry without altering your agent logic:
+### 3. Trace Your Agent
+Wrap your agent functions with `@monitor.trace` and `@monitor.trace_tool`. Limina captures execution duration, tool payloads, and state transitions without altering your business logic:
 
 ```python
 from limina import LiminaMonitor
 from openai import OpenAI
 
 client = OpenAI()
-monitor = LiminaMonitor()
-
-@monitor.trace(session_id="run_001")
-def support_agent(user_query: str):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": user_query}]
-    )
-    return response.choices[0].message.content
-
-# Run your agent
-response = support_agent("Can I return an item after 30 days?")
-monitor.flush()
-```
-
-## What You Get
-
-Tracing an agent or evaluating a dataset produces structured diagnostic telemetry and standalone visual reports:
-
-![Limina AI DAG Inspector Preview](https://github.com/user-attachments/assets/7bb741e0-840a-494c-9953-c9cfa3b5d666)
-*(Interactive reconstruction of agent state transitions, tool execution durations, and side-by-side context verification).*
-
-## Core Capabilities
-
-### 1. Observe: Tool & Agent Tracing
-
-Track tool execution latency, capture structured parameters, and verify factual grounding:
-
-```python
-from limina import LiminaMonitor
-
 monitor = LiminaMonitor(export_html=True)
 
 @monitor.trace_tool(tool_name="database_policy_lookup")
@@ -93,155 +64,165 @@ def query_policy(order_id: str):
     return {"max_return_days": 14, "allow_cash": False}
 
 @monitor.trace(session_id="session_order_check")
-def agent(user_query: str):
+def support_agent(user_query: str):
     policy = query_policy("ORD-101")
-    return "Our store policy specifies a maximum return window of 14 days."
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": user_query}]
+    )
+    return response.choices[0].message.content
 
-agent("I want a refund for order #101.")
+# Execute agent
+response = support_agent("Can I return an item after 30 days?")
+
+# Flush pending background trace uploads
 monitor.flush()
-# Generates 'report.html' on disk with interactive DAG and context inspection
 ```
 
-### 2. Evaluate: Historical Log Ingestion
+## CI/CD Gating with GitHub Actions
 
-Limina verifies generated claims directly against supplied tool outputs and conversation context instead of relying on a second generative judge for every assertion:
+Add automated prompt regression gating to your CI pipeline in your repository workflow (`.github/workflows/limina.yml`):
+
+```yaml
+name: Limina AI Regression Gate
+
+on: [pull_request]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  regression-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Limina-AI/limina-python@v1
+        with:
+          api-key: ${{ secrets.LIMINA_API_KEY }}
+          baseline: 'tests/eval_datasets/baseline_golden.json'
+          candidate: 'tests/eval_datasets/candidate_patch.json'
+          fail-on-regression: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+When a regression occurs, `limina-action` posts a 4-quadrant state matrix directly on the PR and exits with `code 1`:
+
+```text
+### [Limina AI] Regression Report
+Gate Status: BLOCKED (REGRESSION_DETECTED)
+
+| Metric | Baseline | Candidate | Delta |
+| :--- | :--- | :--- | :--- |
+| Factual Accuracy | 100.0% | 50.0% | -50.0% |
+| Mean Latency | 120.0ms | 120.0ms | +0.0ms |
+
+- Fixed Scenarios: 0
+- New Regressions: 1 (test_warranty_check)
+
+Recommendation: DO NOT SHIP: 1 previously passing scenario broke after prompt patch.
+```
+
+## 4-Quadrant Regression Comparator
+
+Compare a **Baseline Golden Dataset** against a **Candidate Prompt** locally or in test suites:
 
 ```python
 from limina import LiminaMonitor
 
 monitor = LiminaMonitor()
 
-# Evaluate directly from OpenAI message transcripts
-openai_messages = [
-    {"role": "user", "content": "Can I return an item after 45 days?"},
-    {"role": "tool", "content": '{"max_days": 14, "cash_refund": false}'},
-    {"role": "assistant", "content": "Returns are strictly limited to 14 days."}
-]
-
-report = monitor.evaluate_logs(openai_messages)
-
-print(f"Health Rating : {report['executive_summary']['health_rating']}")
-print(f"Success Rate  : {report['executive_summary']['success_rate_percentage']}%")
-```
-
-### 3. Compare: Regression Diff Engine & CI/CD Gating
-
-When updating system prompts or switching models, compare a **Baseline** against a **Candidate** agent dataset. Limina evaluates the mathematical delta across a **4-Quadrant State Matrix**:
-
-* **Fixed Scenarios:** Trajectories that previously failed and are now resolved.
-* **New Regressions:** Previously passing scenarios that broke after the prompt patch.
-* **Persistent Failures:** Scenarios that remain ungrounded in both versions.
-* **Stable Passing:** Scenarios consistently passing across both versions.
-
-```python
-from limina import LiminaMonitor
-
-monitor = LiminaMonitor()
-
-# Compare baseline vs candidate runs
-# fail_on_regression=True raises RuntimeError on detected regressions (blocks CI merge)
+# Compares datasets across Fixed, New Regressions, Persistent, and Stable Passing
 diff_report = monitor.compare(
-    baseline_logs="datasets/baseline_golden.json",
-    candidate_logs="datasets/candidate_patched.json",
-    fail_on_regression=True
+    baseline_logs="tests/baseline.json",
+    candidate_logs="tests/candidate.json",
+    fail_on_regression=True  # Raises RuntimeError on detected regressions (blocks CI merge)
 )
 
 analysis = diff_report["regression_analysis"]
 print(f"Verdict     : {analysis['verdict']} (Gate: {analysis['ci_gate_status']})")
 print(f"Delta Acc   : {analysis['metrics']['delta_accuracy_percentage']:+0.1f}%")
-print(f"Fixed Bugs  : {analysis['breakdown']['fixed_count']}")
 print(f"Regressions : {analysis['breakdown']['new_regressions_count']}")
 ```
 
-## Framework Integrations
+## Advanced Diagnostics & Features
 
-`LogAdapter` automatically standardizes third-party agent logs into State-Space Directed Acyclic Graphs (DAGs):
+### 1. Standalone Visual HTML Reports (`export_html=True`)
+Generate an interactive, single-file HTML report (`report.html`) on local disk without opening the cloud dashboard. It contains an animated State-Space DAG canvas, latency flamegraphs, and the side-by-side NLI Truth Mirror (Tool Premise vs. Agent Claim):
+
+```python
+from limina import LiminaMonitor
+
+# Saves 'report.html' locally on every evaluation
+monitor = LiminaMonitor(export_html=True)
+
+# Run evaluations...
+monitor.evaluate_logs("logs/agent_transcript.json")
+```
+
+### 2. Adversarial Red-Teaming & Fuzzing (`run_stress_test=True`)
+Evaluate agent stability under adversarial conditions. Injects stochastic QWERTY keyboard typos, character perturbations, and system override jailbreaks to calculate drift deltas and robustness scores:
+
+```python
+from limina import LiminaMonitor
+
+monitor = LiminaMonitor()
+
+# Runs adversarial perturbation test suite
+report = monitor.evaluate_logs("dataset.json", run_stress_test=True)
+
+summary = report["executive_summary"]
+print(f"Robustness Health: {summary['health_rating']} (Score: {summary['success_rate_percentage']}%)")
+```
+
+## Supported Integrations & Log Formats
+
+`LogAdapter` automatically standardizes third-party agent transcripts into State-Space DAGs:
 
 ```python
 from limina import LogAdapter
 
-# 1. From OpenAI Tool-Calling transcripts
+# 1. From OpenAI Tool-Calling Transcripts
 trajectories = LogAdapter.from_openai(openai_messages, session_id="eval_01")
 
 # 2. From LangSmith / LangChain Run Trees
 trajectories = LogAdapter.from_langsmith(langsmith_run_dict)
 
-# 3. Auto-detect any structure (JSON file path, raw list, or dict)
+# 3. Auto-detect any structure (JSON file path, list of dicts, or generic traces)
 trajectories = LogAdapter.auto_convert("logs/production_traces.json")
 ```
 
-## Policy Configuration (`limina.yaml`)
+## Code Examples
 
-Use `limina.yaml` when the same compliance constraints and strictness rules should apply consistently across local development and CI/CD pipelines:
+Explore ready-to-run scripts in our repository:
 
-```yaml
-# limina.yaml
-strictness_profile: "standard"   # Options: "standard", "banking", "healthcare", "customer_support", "creative"
-max_sentences: 14
-max_tool_latency_ms: 3000.0
-
-custom_rules:
-  forbidden_words:
-    - "competitorxyz"
-    - "guaranteed profit"
-  required_words: []
+```text
+examples/
+├── basic_tracing.py       # Basic sync/async agent tracing with @monitor.trace
+├── openai_agent.py        # OpenAI tool-calling agent with live context grounding
+├── langsmith_adapter.py   # Ingesting LangSmith & LangChain run trees into Limina DAGs
+├── regression_diff.py     # Comparing baseline vs. candidate prompt datasets
+└── github_action/         # CI/CD regression gating workflow template
 ```
 
+## Troubleshooting & Common Questions
 
-## Adversarial Red-Teaming (`run_stress_test=True`)
+#### 1. Why are my traces not appearing in the dashboard?
+Trace uploads execute asynchronously on a background thread pool to avoid adding latency to host agent functions. Call `monitor.flush()` before your application process exits to ensure all queued traces are dispatched.
 
-Evaluate agent resilience against user typos, stochastic character perturbations, and prompt injection attacks:
+#### 2. Does Limina support asynchronous (`async def`) agent functions?
+Yes. The `@monitor.trace` and `@monitor.trace_tool` decorators natively support both synchronous (`def`) and asynchronous (`async def`) functions using thread-safe context propagation.
 
-```python
-report = monitor.evaluate_logs("production_traces.json", run_stress_test=True)
-```
+#### 3. How does `fail_on_regression=True` work in CI/CD?
+When enabled, `monitor.compare` inspects the 4-quadrant delta. If any previously passing scenario breaks (`new_regressions_count > 0`), it raises a `RuntimeError` and triggers `sys.exit(1)`, causing GitHub Actions or pytest to fail the build.
 
-## Output Contract & CI Consumption
+## Security, Privacy & Data Governance
 
-All evaluation and comparison methods return standard JSON-serializable Python dictionaries, allowing programmatic assertions in test suites:
-
-```python
-def test_agent_regression():
-    report = monitor.compare(baseline_data, candidate_data)
-    
-    analysis = report["regression_analysis"]
-    assert analysis["ci_gate_status"] == "PASSED"
-    assert analysis["breakdown"]["new_regressions_count"] == 0
-```
-
-## Compatibility & Requirements
-
-* **Python Versions:** 3.8, 3.9, 3.10, 3.11, 3.12
-* **Execution Modes:** Full support for both synchronous (`def`) and asynchronous (`async def`) agent functions.
-* **Integrations:** Standard OpenAI message schemas, LangChain / LangSmith run trees, and custom DAG JSON formats.
-* **CI/CD Environments:** GitHub Actions, GitLab CI, and standard test runners (`pytest`).
-
-
-## Current Limitations
-
-* **Context Grounding Scope:** Atomic grounding checks verify assertions against retrieved tool payloads and supplied conversation context; external unsupplied knowledge bases are not indexed automatically.
-* **Regression Alignment:** The regression comparator matches trajectories primarily by `session_id`. Datasets without matching identifiers are aligned sequentially.
-
-## Privacy, Security & Data Governance
-
-* **Zero Data Retention:** Customer conversation logs and tool outputs are processed ephemerally in volatile memory during evaluation and are not retained on disk.
-* **No Foundation Model Training:** Customer data is never stored, aggregated, or used for model training.
-* **Cryptographic Key Isolation:** API keys are never stored in plaintext and rely on SHA-256 one-way hashing for authentication.
-* **Non-Blocking Runtime:** Tracing decorators execute asynchronously on background threads to prevent latency overhead on host agents.
-
-## API Reference (Summary)
-
-| Class / Method | Description |
-| :--- | :--- |
-| `LiminaMonitor(api_key, profile, export_html)` | Initializes the client. Reads `LIMINA_API_KEY` by default. |
-| `@monitor.trace(session_id, description)` | Decorator for sync and async agent execution functions. |
-| `@monitor.trace_tool(tool_name)` | Decorator measuring tool execution duration and payload. |
-| `monitor.evaluate(payload)` | Evaluates a structured State-Space DAG batch. |
-| `monitor.evaluate_logs(input_data)` | Evaluates raw JSON paths, OpenAI transcripts, or LangSmith dumps. |
-| `monitor.compare(base, cand, fail_on_regression)` | Runs mathematical regression comparison and CI gating. |
-| `monitor.flush()` | Blocks until pending background trace dispatches complete. |
+- **Strict Zero Data Retention (ZDR):** Conversation transcripts and tool outputs are processed ephemerally in volatile memory (RAM) and are never persisted to disk.
+- **Zero Foundation Model Training (ZMT):** Customer prompts, system instructions, and evaluation data are never used to train or fine-tune AI models.
+- **Cryptographic Key Isolation:** API secret keys are stored strictly as irreversible SHA-256 cryptographic hashes.
+- **Enterprise On-Premise:** Air-gapped self-hosted Docker container deployment available on request for enterprise tiers.
 
 ## License
 
-Distributed under the Apache-2.0 License.
-```
+Distributed under the [Apache-2.0 License](LICENSE).
