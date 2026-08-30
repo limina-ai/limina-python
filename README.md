@@ -8,19 +8,6 @@
 > Local evaluation, agent observability, and CI/CD regression testing for AI agents.
 > Run fast, deterministic evaluations without sending every test to a third-party LLM judge.
 
-## Why Limina?
-
-Evaluating AI agents with a generative LLM judge introduces three major bottlenecks in production CI/CD pipelines:
-1. **Flaky assertions:** Probabilistic judges return non-deterministic scores on identical test cases (~80% consistency).
-2. **High latency:** Generative judges add 6–10 seconds per test case, stalling pull request pipelines.
-3. **Double token costs:** Paying model API fees twice—once for the agent execution, and once for the evaluation judge.
-
-Limina formalizes execution transcripts into a **State-Space DAG** and runs calibrated Cross-Encoder Natural Language Inference (NLI) models locally on CPU:
-- **$0 Third-Party Judge API Cost:** Runs entirely on local CPU with zero third-party judge token bills.
-- **Low-Latency Execution:** 1.6x to 6x measured speedups compared to generative judges across our beta test setups.
-- **100% Deterministic:** Same input + same context = exact same assertion verdict every single run.
-- **Automated CI/CD Gating:** Automatically comments on Pull Requests and blocks merges (`exit code 1`) if a prompt tweak breaks previously passing scenarios.
-
 ## Benchmark Results (Week 1 Private Beta)
 
 Mean results across 175+ unique evaluation test cases contributed by beta testers, including real agent workloads and synthetic failure fixtures:
