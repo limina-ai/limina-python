@@ -1,7 +1,7 @@
 # Limina AI — Python SDK & CI/CD Regression Gate
 
 [![PyPI Version](https://img.shields.io/pypi/v/limina-ai.svg)](https://pypi.org/project/limina-ai/)
-[![GitHub Action](https://img.shields.io/badge/GitHub_Action-v1-blue.svg)](https://github.com/Limina-AI/limina-python/actions)
+[![GitHub Action](https://img.shields.io/badge/GitHub_Action-v1-blue.svg)](https://github.com/Limina-ai/limina-python/actions)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python Versions](https://img.shields.io/pypi/pyversions/limina-ai.svg)](https://pypi.org/project/limina-ai/)
 
@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Limina-AI/limina-python@v1
+      - uses: limina-ai/limina-python@v1
         with:
           api-key: ${{ secrets.LIMINA_API_KEY }}
           baseline: 'tests/eval_datasets/baseline_golden.json'
