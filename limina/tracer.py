@@ -7,6 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import Optional, Callable, Any, Dict, List, Union
+import httpx
 
 _active_session_ctx: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_active_session_ctx", default=None)
 _DEFAULT_ENGINE_URL = "https://api.limina-ai.tech"
@@ -19,18 +20,30 @@ def load_local_limina_config() -> dict:
                 with open(filename, "r", encoding="utf-8") as f:
                     cfg = yaml.safe_load(f)
                     if isinstance(cfg, dict):
-                        print(f"[limina] Loaded declarative policy from [{filename}]")
                         return cfg
-            except ImportError:
+            except Exception:
                 pass
-            except Exception as e:
-                print(f"[limina] Warning: Could not parse {filename}: {e}")
     return {}
+
+def _extract_user_query(args: tuple, kwargs: dict) -> str:
+    if args:
+        first_arg = args[0]
+        if hasattr(first_arg, "__class__") and not isinstance(first_arg, (str, int, float, dict, list, bool)):
+            if len(args) > 1:
+                return str(args[1])
+        else:
+            return str(first_arg)
+    if kwargs:
+        for k in ["query", "user_query", "prompt", "message", "input", "text"]:
+            if k in kwargs:
+                return str(kwargs[k])
+        return str(next(iter(kwargs.values())))
+    return "Agent Execution Triggered"
 
 class LiminaMonitor:
     """
     Official Python SDK for Limina AI.
-    Real-time Trajectory Diagnostics, Regression Testing & Automated Prompt Patching.
+    Lightweight, Real-time Trajectory Diagnostics & Regression Testing.
     """
     _instance = None
 
@@ -41,7 +54,7 @@ class LiminaMonitor:
         export_html: bool = False,
         host: Optional[str] = None
     ):
-        self.api_key = api_key or os.getenv("LIMINA_API_KEY")
+        self.api_key = (api_key or os.getenv("LIMINA_API_KEY") or "").strip()
         if not self.api_key:
             raise ValueError(
                 "[limina] API Key is missing. Pass it via LiminaMonitor(api_key='...') "
@@ -51,21 +64,12 @@ class LiminaMonitor:
         active_prof = profile or self.config.get("strictness_profile") or "standard"
         self.profile = str(active_prof).lower()
         self.export_html = export_html
-        self.target_url = host or _DEFAULT_ENGINE_URL
-        self._client = None
-        self._client_lock = threading.Lock()
+        self.target_url = (host or _DEFAULT_ENGINE_URL).rstrip("/")
+        self._http_client = httpx.Client(timeout=30.0)
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
+        self._pending_futures = set()
+        self._futures_lock = threading.Lock()
         LiminaMonitor._instance = self
-
-    @property
-    def client(self):
-        """Lazy-loaded Gradio Client to prevent blocking on network during SDK import."""
-        if self._client is None:
-            with self._client_lock:
-                if self._client is None:
-                    from gradio_client import Client
-                    self._client = Client(self.target_url)
-        return self._client
 
     def set_profile(self, profile_name: str):
         self.profile = profile_name.lower()
@@ -77,40 +81,61 @@ class LiminaMonitor:
             raise RuntimeError("[limina] LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
         return cls._instance
 
-    def evaluate(self, payload: List[Dict[str, Any]], run_stress_test: bool = False) -> Dict[str, Any]:
-        """Sends trajectories synchronously to the Limina Engine with declarative config."""
+    def _post(self, endpoint: str, payload: dict) -> dict:
+        """Transport HTTP unificat, ultra-rapid și independent."""
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": self.api_key
+        }
+        url = f"{self.target_url}{endpoint}"
         try:
-            for session in payload:
-                if "config" not in session:
-                    session["config"] = self.config
-                if "run_stress_test" not in session:
-                    session["run_stress_test"] = run_stress_test
-
-            raw_result_str = self.client.predict(
-                api_key=self.api_key,
-                payload_json=json.dumps(payload),
-                api_name="/evaluate"
-            )
-            result = json.loads(raw_result_str)
-
-            if "error" in result:
-                print(f"[limina] Error: {result['error']}")
-                return result
-                
-            if self.export_html and result.get("rendered_html"):
-                try:
-                    with open("report.html", "w", encoding="utf-8") as f:
-                        f.write(result["rendered_html"])
-                    print("[limina] Standalone visual report saved to: report.html")
-                except Exception as html_err:
-                    print(f"[limina] Warning: Could not save report.html: {html_err}")
-
-            summary = result.get('executive_summary', {})
-            print(f"[limina] Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
-            return result
+            if "/api/" not in endpoint and not endpoint.startswith("/run/"):
+                url = f"{self.target_url}/api{endpoint}"
+            
+            res = self._http_client.post(url, json=payload, headers=headers)
+            if res.status_code == 429:
+                print(f"[limina] Rate Limit: {res.text}")
+                return {"status": "RATE_LIMITED", "error": res.text}
+            if res.status_code != 200:
+                return {"status": "ERROR", "error": f"HTTP {res.status_code}: {res.text}"}
+            
+            data = res.json()
+            if isinstance(data, str):
+                return json.loads(data)
+            if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
+                return json.loads(data["data"][0])
+            return data
         except Exception as e:
-            print(f"[limina] Error: Evaluation failed: {e}")
             return {"status": "ERROR", "error": str(e)}
+
+    def evaluate(self, payload: List[Dict[str, Any]], run_stress_test: bool = False) -> Dict[str, Any]:
+        """Sends trajectories synchronously to the Limina Engine."""
+        for session in payload:
+            if "config" not in session:
+                session["config"] = self.config
+            if "run_stress_test" not in session:
+                session["run_stress_test"] = run_stress_test
+        req_payload = {
+            "api_key": self.api_key,
+            "payload_json": json.dumps(payload)
+        }
+        result = self._post("/evaluate", req_payload)
+
+        if "error" in result:
+            print(f"[limina] Notice: {result['error']}")
+            return result
+            
+        if self.export_html and result.get("rendered_html"):
+            try:
+                with open("report.html", "w", encoding="utf-8") as f:
+                    f.write(result["rendered_html"])
+                print("[limina] Standalone visual report saved to: report.html")
+            except Exception as html_err:
+                print(f"[limina] Warning: Could not save report.html: {html_err}")
+
+        summary = result.get('executive_summary', {})
+        print(f"[limina] Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
+        return result
 
     def evaluate_logs(
         self, 
@@ -118,7 +143,6 @@ class LiminaMonitor:
         source: str = "auto",
         run_stress_test: bool = False
     ) -> Dict[str, Any]:
-        """Auto-converts logs and runs batch evaluation."""
         from .adapters import LogAdapter
         trajectories = LogAdapter.auto_convert(input_data, source=source)
         if not trajectories:
@@ -133,10 +157,6 @@ class LiminaMonitor:
         source: str = "auto",
         fail_on_regression: bool = False
     ) -> Dict[str, Any]:
-        """
-        Compares Baseline vs. Candidate agent trajectories across a 4-Quadrant State Matrix.
-        Raises RuntimeError on detected regressions if fail_on_regression=True (CI Gate Block).
-        """
         from .adapters import LogAdapter
         base_trajectories = LogAdapter.auto_convert(baseline_logs, source=source)
         cand_trajectories = LogAdapter.auto_convert(candidate_logs, source=source)
@@ -146,23 +166,16 @@ class LiminaMonitor:
             return {}
 
         for session in base_trajectories:
-            if "config" not in session:
-                session["config"] = self.config
+            session.setdefault("config", self.config)
         for session in cand_trajectories:
-            if "config" not in session:
-                session["config"] = self.config
+            session.setdefault("config", self.config)
 
-        try:
-            raw_result_str = self.client.predict(
-                api_key=self.api_key,
-                baseline_json=json.dumps(base_trajectories),
-                candidate_json=json.dumps(cand_trajectories),
-                api_name="/compare"
-            )
-            result = json.loads(raw_result_str)
-        except Exception as net_err:
-            print(f"[limina] Error: Comparison network failure: {net_err}")
-            return {"status": "ERROR", "error": str(net_err)}
+        req_payload = {
+            "api_key": self.api_key,
+            "baseline_json": json.dumps(base_trajectories),
+            "candidate_json": json.dumps(cand_trajectories)
+        }
+        result = self._post("/compare", req_payload)
             
         diff = result.get("regression_analysis", {})
         metrics = diff.get("metrics", {})
@@ -180,7 +193,7 @@ class LiminaMonitor:
 
         if fail_on_regression and ci_status == "BLOCKED":
             reg_count = diff.get('breakdown', {}).get('new_regressions_count', 0)
-            raise RuntimeError(f"[limina] CI Gate Blocked: {reg_count} new regression(s) detected. PR cannot be merged.")
+            raise RuntimeError(f"[limina] CI Gate Blocked: {reg_count} new regression(s) detected. Build blocked.")
         
         return result
 
@@ -190,12 +203,20 @@ class LiminaMonitor:
                 self.evaluate(payload)
             except Exception as e:
                 print(f"[limina] Background Sync Notice: {e}")
-        self._executor.submit(_worker)
 
-    def flush(self):
-        """Waits for all pending background trace uploads to complete."""
-        self._executor.shutdown(wait=True)
-        self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
+        future = self._executor.submit(_worker)
+        with self._futures_lock:
+            self._pending_futures.add(future)
+            future.add_done_callback(lambda f: self._pending_futures.discard(f))
+
+    def flush(self, timeout: float = 10.0):
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            with self._futures_lock:
+                if not self._pending_futures:
+                    return
+            time.sleep(0.05)
+        print("[limina] Warning: Flush timeout reached before all traces completed uploading.")
 
     def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run", run_stress_test: bool = False):
         def decorator(func: Callable):
@@ -203,7 +224,7 @@ class LiminaMonitor:
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs):
                     start_time = time.time()
-                    user_text = str(args[0]) if args else str(kwargs)
+                    user_text = _extract_user_query(args, kwargs)
                     ctx = {
                         "nodes": [{"id": "n1", "type": "user", "text": user_text}],
                         "edges": [],
@@ -247,12 +268,11 @@ class LiminaMonitor:
                         _active_session_ctx.reset(token)
 
                 return async_wrapper
-
             else:
                 @functools.wraps(func)
                 def sync_wrapper(*args, **kwargs):
                     start_time = time.time()
-                    user_text = str(args[0]) if args else str(kwargs)
+                    user_text = _extract_user_query(args, kwargs)
                     ctx = {
                         "nodes": [{"id": "n1", "type": "user", "text": user_text}],
                         "edges": [],
@@ -335,7 +355,6 @@ class LiminaMonitor:
                                 active_ctx["last_node_id"] = tool_node_id
 
                 return async_tool_wrapper
-
             else:
                 @functools.wraps(func)
                 def sync_tool_wrapper(*args, **kwargs):
