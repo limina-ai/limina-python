@@ -5,3 +5,4 @@ __pycache__/
 *.py[cod]
 .env
 report.html
+.ipynb_checkpoints
