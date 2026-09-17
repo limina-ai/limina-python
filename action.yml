@@ -27,6 +27,18 @@ inputs:
     description: 'Automatically post/update the regression diff report on the Pull Request'
     required: false
     default: 'true'
+  slack-webhook:
+    description: 'Optional Slack Incoming Webhook URL for team alerts'
+    required: false
+    default: ''
+  discord-webhook:
+    description: 'Optional Discord Webhook URL for team alerts'
+    required: false
+    default: ''
+  notify-on:
+    description: 'Alert trigger condition: failure, always, or never'
+    required: false
+    default: 'failure'
 
 outputs:
   verdict:
@@ -63,7 +75,11 @@ runs:
         INPUT_FAIL_ON_REGRESSION: ${{ inputs.fail-on-regression }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
+        INPUT_SLACK_WEBHOOK: ${{ inputs.slack-webhook }}
+        INPUT_DISCORD_WEBHOOK: ${{ inputs.discord-webhook }}
+        INPUT_NOTIFY_ON: ${{ inputs.notify-on }}
         GITHUB_EVENT_PATH: ${{ github.event_path }}
         GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_SHA: ${{ github.sha }}
       run: |
         python ${{ github.action_path }}/ci_entrypoint.py
