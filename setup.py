@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="limina-ai",
-    version="1.0.8",
+    version="1.1.0",
     author="Limina AI",
     author_email="lucianinq@gmail.com",
     description="Deterministic Trajectory Diagnostics & Automated Prompt Patching for Multi-Turn AI Agents",

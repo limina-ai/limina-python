@@ -37,20 +37,25 @@ def post_or_update_pr_comment(token: str, repo: str, pr_number: int, markdown_bo
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "Limina-CI-Gate"
     }
-    
-    comments_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments?per_page=100"
     comment_tag = "<!-- limina-regression-report-marker -->"
     full_body = f"{comment_tag}\n{markdown_body}"
-
+    existing_comment_id = None
     try:
-        req = urllib.request.Request(comments_url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
-            comments = json.loads(resp.read().decode("utf-8"))
+        for page in range(1, 6):
+            comments_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments?per_page=100&page={page}"
+            req = urllib.request.Request(comments_url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                comments = json.loads(resp.read().decode("utf-8"))
 
-        existing_comment_id = None
-        for c in comments:
-            if comment_tag in c.get("body", ""):
-                existing_comment_id = c["id"]
+            if not comments:
+                break
+
+            for c in comments:
+                if comment_tag in c.get("body", ""):
+                    existing_comment_id = c["id"]
+                    break
+
+            if existing_comment_id:
                 break
 
         if existing_comment_id:

@@ -1,9 +1,11 @@
 import os
+import atexit
 import functools
 import time
 import json
 import inspect
 import threading
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import Optional, Callable, Any, Dict, List, Union
@@ -40,6 +42,11 @@ def _extract_user_query(args: tuple, kwargs: dict) -> str:
         return str(next(iter(kwargs.values())))
     return "Agent Execution Triggered"
 
+class LiminaThreadPoolExecutor(ThreadPoolExecutor):
+    def submit(self, fn: Callable, *args, **kwargs):
+        ctx = contextvars.copy_context()
+        return super().submit(ctx.run, fn, *args, **kwargs)
+
 class LiminaMonitor:
     """
     Official Python SDK for Limina AI.
@@ -69,7 +76,20 @@ class LiminaMonitor:
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="limina_trace_uploader")
         self._pending_futures = set()
         self._futures_lock = threading.Lock()
+        self._is_closed = False
         LiminaMonitor._instance = self
+        atexit.register(self.close)
+    @staticmethod
+    def wrap_task(fn: Callable) -> Callable:
+        ctx = contextvars.copy_context()
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            return ctx.run(fn, *args, **kwargs)
+        return wrapper
+
+    @staticmethod
+    def propagate_context(fn: Callable) -> Callable:
+        return LiminaMonitor.wrap_task(fn)
 
     def set_profile(self, profile_name: str):
         self.profile = profile_name.lower()
@@ -81,8 +101,7 @@ class LiminaMonitor:
             raise RuntimeError("[limina] LiminaMonitor is not initialized. Call LiminaMonitor(api_key=...) first.")
         return cls._instance
 
-    def _post(self, endpoint: str, payload: dict) -> dict:
-        """Transport HTTP unificat, ultra-rapid și independent."""
+    def _post(self, endpoint: str, payload: Union[dict, list]) -> dict:
         headers = {
             "Content-Type": "application/json",
             "X-API-Key": self.api_key
@@ -109,22 +128,17 @@ class LiminaMonitor:
             return {"status": "ERROR", "error": str(e)}
 
     def evaluate(self, payload: List[Dict[str, Any]], run_stress_test: bool = False) -> Dict[str, Any]:
-        """Sends trajectories synchronously to the Limina Engine."""
         for session in payload:
             if "config" not in session:
                 session["config"] = self.config
             if "run_stress_test" not in session:
                 session["run_stress_test"] = run_stress_test
-        req_payload = {
-            "api_key": self.api_key,
-            "payload_json": json.dumps(payload)
-        }
-        result = self._post("/evaluate", req_payload)
+        result = self._post("/api/evaluate", payload)
 
         if "error" in result:
             print(f"[limina] Notice: {result['error']}")
             return result
-            
+
         if self.export_html and result.get("rendered_html"):
             try:
                 with open("report.html", "w", encoding="utf-8") as f:
@@ -132,7 +146,7 @@ class LiminaMonitor:
                 print("[limina] Standalone visual report saved to: report.html")
             except Exception as html_err:
                 print(f"[limina] Warning: Could not save report.html: {html_err}")
-
+            
         summary = result.get('executive_summary', {})
         print(f"[limina] Evaluation complete. Health: [{summary.get('health_rating', 'N/A')}] (Success Rate: {summary.get('success_rate_percentage', 0.0):.1f}%)")
         return result
@@ -171,11 +185,11 @@ class LiminaMonitor:
             session.setdefault("config", self.config)
 
         req_payload = {
-            "api_key": self.api_key,
-            "baseline_json": json.dumps(base_trajectories),
-            "candidate_json": json.dumps(cand_trajectories)
+            "baseline": base_trajectories,
+            "candidate": cand_trajectories,
+            "profile": self.profile
         }
-        result = self._post("/compare", req_payload)
+        result = self._post("/api/compare", req_payload)
             
         diff = result.get("regression_analysis", {})
         metrics = diff.get("metrics", {})
@@ -184,8 +198,8 @@ class LiminaMonitor:
         
         print(f"\n[limina] Regression Verdict: {verdict} (Gate: {ci_status})")
         print("-" * 52)
-        print(f"  Δ Accuracy   : {metrics.get('delta_accuracy_percentage', 0.0):+0.1f}% ({metrics.get('baseline_accuracy', 0.0)}% -> {metrics.get('candidate_accuracy', 0.0)}%)")
-        print(f"  Latency      : {metrics.get('baseline_latency_ms', 0.0)}ms -> {metrics.get('candidate_latency_ms', 0.0)}ms ({metrics.get('delta_latency_ms', 0.0):+0.1f}ms)")
+        print(f"  Δ Accuracy   : {metrics.get('delta_accuracy_percentage', 0.0):+0.1f}%")
+        print(f"  Latency      : {metrics.get('baseline_latency_ms', 0.0)}ms -> {metrics.get('candidate_latency_ms', 0.0)}ms")
         print(f"  Fixed        : {diff.get('breakdown', {}).get('fixed_count', 0)} resolved")
         print(f"  Regressions  : {diff.get('breakdown', {}).get('new_regressions_count', 0)} broken")
         print(f"  Action       : {diff.get('recommendation')}")
@@ -198,16 +212,22 @@ class LiminaMonitor:
         return result
 
     def _send_to_cloud_async(self, payload: List[Dict[str, Any]]):
+        if self._is_closed:
+            return
+
         def _worker():
             try:
                 self.evaluate(payload)
             except Exception as e:
                 print(f"[limina] Background Sync Notice: {e}")
 
-        future = self._executor.submit(_worker)
-        with self._futures_lock:
-            self._pending_futures.add(future)
-            future.add_done_callback(lambda f: self._pending_futures.discard(f))
+        try:
+            future = self._executor.submit(_worker)
+            with self._futures_lock:
+                self._pending_futures.add(future)
+                future.add_done_callback(lambda f: self._pending_futures.discard(f))
+        except RuntimeError:
+            pass
 
     def flush(self, timeout: float = 10.0):
         start_time = time.time()
@@ -217,6 +237,23 @@ class LiminaMonitor:
                     return
             time.sleep(0.05)
         print("[limina] Warning: Flush timeout reached before all traces completed uploading.")
+
+    def close(self):
+        if self._is_closed:
+            return
+        self._is_closed = True
+        try:
+            self.flush(timeout=5.0)
+            self._executor.shutdown(wait=True)
+            self._http_client.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def trace(self, session_id: str = "default_session", description: str = "Monitored Agent Run", run_stress_test: bool = False):
         def decorator(func: Callable):
@@ -321,6 +358,15 @@ class LiminaMonitor:
 
     def trace_tool(self, tool_name: str = "custom_tool"):
         def decorator(func: Callable):
+            def _format_tool_output(result: Any, error_msg: Optional[str]) -> str:
+                if error_msg is not None:
+                    return f"TOOL_ERROR: {error_msg}"
+                if result is None:
+                    return json.dumps({"status": "success", "result": None})
+                if isinstance(result, (dict, list)):
+                    return json.dumps(result)
+                return str(result)
+
             if inspect.iscoroutinefunction(func):
                 @functools.wraps(func)
                 async def async_tool_wrapper(*args, **kwargs):
@@ -340,11 +386,12 @@ class LiminaMonitor:
                             with active_ctx["lock"]:
                                 tool_node_id = f"n{active_ctx['node_counter']}"
                                 active_ctx["node_counter"] += 1
-                                tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
+                                tool_text = _format_tool_output(result, error_msg)
 
                                 active_ctx["nodes"].append({
                                     "id": tool_node_id,
                                     "type": "tool",
+                                    "name": tool_name,
                                     "text": tool_text,
                                     "execution_time_ms": round(duration_ms, 2)
                                 })
@@ -374,11 +421,12 @@ class LiminaMonitor:
                             with active_ctx["lock"]:
                                 tool_node_id = f"n{active_ctx['node_counter']}"
                                 active_ctx["node_counter"] += 1
-                                tool_text = json.dumps(result) if isinstance(result, (dict, list)) else str(result or error_msg)
+                                tool_text = _format_tool_output(result, error_msg)
 
                                 active_ctx["nodes"].append({
                                     "id": tool_node_id,
                                     "type": "tool",
+                                    "name": tool_name,
                                     "text": tool_text,
                                     "execution_time_ms": round(duration_ms, 2)
                                 })

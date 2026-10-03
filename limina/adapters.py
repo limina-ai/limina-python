@@ -28,6 +28,8 @@ class LogAdapter:
         nodes = []
         edges = []
         node_idx = 1
+        last_node_ids = []
+        tool_call_id_to_node_id = {}
 
         for msg in messages:
             role = msg.get("role", "user")
@@ -37,16 +39,26 @@ class LogAdapter:
             if role == "user":
                 node_id = f"n{node_idx}"
                 nodes.append({"id": node_id, "type": "user", "label": "USER", "text": content})
-                if node_idx > 1:
-                    edges.append({"from": f"n{node_idx-1}", "to": node_id})
+                for parent_id in last_node_ids:
+                    edges.append({"from": parent_id, "to": node_id})
+                last_node_ids = [node_id]
                 node_idx += 1
 
             elif role == "assistant" and tool_calls:
+                if content.strip():
+                    thought_id = f"n{node_idx}"
+                    nodes.append({"id": thought_id, "type": "thought", "label": "THOUGHT", "text": content})
+                    for parent_id in last_node_ids:
+                        edges.append({"from": parent_id, "to": thought_id})
+                    last_node_ids = [thought_id]
+                    node_idx += 1
+                created_tool_nodes = []
                 for tc in tool_calls:
                     node_id = f"n{node_idx}"
                     func_name = tc.get("function", {}).get("name", "tool_call")
                     func_args = tc.get("function", {}).get("arguments", "")
-                    
+                    call_id = tc.get("id")
+
                     text_repr = json.dumps({"tool": func_name, "args": func_args}) if isinstance(func_args, dict) else str(func_args)
                     nodes.append({
                         "id": node_id,
@@ -55,22 +67,47 @@ class LogAdapter:
                         "text": text_repr,
                         "execution_time_ms": 150.0
                     })
-                    if node_idx > 1:
-                        edges.append({"from": f"n{node_idx-1}", "to": node_id})
+                    for parent_id in last_node_ids:
+                        edges.append({"from": parent_id, "to": node_id})
+
+                    if call_id:
+                        tool_call_id_to_node_id[call_id] = node_id
+
+                    created_tool_nodes.append(node_id)
                     node_idx += 1
 
+                last_node_ids = created_tool_nodes
+
             elif role == "tool":
+                call_id = msg.get("tool_call_id")
+                matched_call_node = tool_call_id_to_node_id.get(call_id)
+
                 node_id = f"n{node_idx}"
-                nodes.append({"id": node_id, "type": "tool", "label": "TOOL_OUTPUT", "text": content, "execution_time_ms": 120.0})
-                if node_idx > 1:
-                    edges.append({"from": f"n{node_idx-1}", "to": node_id})
+                nodes.append({
+                    "id": node_id,
+                    "type": "tool",
+                    "label": "TOOL_OUTPUT",
+                    "text": content,
+                    "execution_time_ms": 120.0
+                })
+                if matched_call_node:
+                    edges.append({"from": matched_call_node, "to": node_id})
+                    if matched_call_node in last_node_ids:
+                        last_node_ids.remove(matched_call_node)
+                else:
+                    for parent_id in last_node_ids:
+                        edges.append({"from": parent_id, "to": node_id})
+                    last_node_ids = []
+
+                last_node_ids.append(node_id)
                 node_idx += 1
 
             elif role == "assistant":
                 node_id = f"n{node_idx}"
                 nodes.append({"id": node_id, "type": "agent", "label": "AGENT", "text": content})
-                if node_idx > 1:
-                    edges.append({"from": f"n{node_idx-1}", "to": node_id})
+                for parent_id in last_node_ids:
+                    edges.append({"from": parent_id, "to": node_id})
+                last_node_ids = [node_id]
                 node_idx += 1
 
         return {"session_id": session_id, "description": description, "nodes": nodes, "edges": edges}
